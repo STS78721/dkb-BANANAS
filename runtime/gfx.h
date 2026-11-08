@@ -88,6 +88,7 @@ size_t gfx_shader_warm_list(GfxWarmEnt **out);              // malloc'd; recorde
 const GfxShader *gfx_shader_load_private(const uint8_t iid[32], int *owned);
 void gfx_shader_release_private(const GfxShader *s);
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
+uint64_t gfx_shader_spirv_fnv(const GfxShader *s);           // FNV-1a 64 of that SPIR-V, cached on the shader
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
 enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };
@@ -107,7 +108,8 @@ typedef struct {
     uint8_t separate;           // TEX: texture and sampler handles are separate
 } GfxShaderRes;
 typedef struct { uint8_t type, comps, packed, scalar_bits; } GfxShaderIo;   // scalar_bits: actual numeric SPIR-V width, 0 unknown
-uint64_t gfx_shader_origin(const GfxShader *s);             // NVN 2 stage origin (nvn2_origin of its code) noted at get time, or 0
+uint64_t gfx_shader_origin(const GfxShader *s);             // NVN 2 stage origin: noted when its code was lowered, in this run or
+                                                            // an earlier one (shader-cache/nvn2-origins.bin), or 0
 int gfx_shader_stage(const GfxShader *s);                  // GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS or GFX_STAGE_CS
 typedef struct {
     uint32_t version, input, input_vertices, output, invocations, max_output_vertices, passthrough;

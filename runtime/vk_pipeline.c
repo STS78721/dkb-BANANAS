@@ -1254,10 +1254,11 @@ static uint32_t *nan_guard(const GfxShader *src, const uint32_t *w, uint64_t wor
 }
 
 // Fragment stages whose screen-position varyings are rebuilt from gl_FragCoord (spirv_screen_uv.c): Bananza's map
-// mask, which AMD's near-plane clipping turns into long wedges (Eglantine too). Named by NVN 2 stage origin and by the
-// FNV-1a 64 of the translated SPIR-V (the "fs" hash of a TOTK_DUMP passes.txt): the origin is known only for stages
-// lowered in this run (gfx_shader.c note_origin), and the pipelines the boot prewarm builds from the shader cache have
-// none. TOTK_FIX_SCREEN_UV=0 leaves them as the game wrote them.
+// mask, which AMD's near-plane clipping turns into long wedges (Eglantine too). Named by NVN 2 stage origin, which
+// gfx_shader.c keeps per input id in shader-cache/nvn2-origins.bin, so the pipelines the boot prewarm builds from the
+// cache know it once the stage was lowered in any run (--translate-shaders or play). Until then the FNV-1a 64 of the
+// translated SPIR-V (the "fs" hash of a TOTK_DUMP passes.txt) names it on the hosts where it was measured.
+// TOTK_FIX_SCREEN_UV=0 leaves them as the game wrote them.
 static int screen_uv_stage(const GfxShader *src) {
     static const uint64_t origins[] = {0x81f30a4006e64d83ull};
     static const uint64_t spirv_hashes[] = {0x544677ae4ec509beull};   // RX 9070 XT, translator d1b11706005e89ab
