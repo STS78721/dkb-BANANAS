@@ -208,14 +208,16 @@ def partition(est, max_fns, max_bytes, big_fn):
 class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
-    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None):
+    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None, guards=None):
         self.mod = mod
+        self.guards = guards or {}     # {address: (set index, target, kind, register)} (recomp/patches.py `guard`)
         self.starts = starts
         self.patched = patched or {}   # {address: (set index, [replacement words])} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
         self.uses_patches = False
+        self.uses_guards = False
         self.stats = Counter()
         self.unsupported = Counter()
 
@@ -325,12 +327,20 @@ class Emitter:
         all_labels = 'all' in tables.values()
         if all_labels:
             labels = set(range(entry, end, 4))
+        guards = {a: g for a, g in self.guards.items() if entry <= a < end}
+        for a, (_, t, _, _) in guards.items():
+            if not entry <= t < end:
+                raise patches.PatchError(f'{a:#x}: guard target {t:#x} outside the function {entry:#x}-{end:#x}')
+            labels.add(t)
         # An unresolved computed br re-enters the function through fb_<entry>, a C function of its own, which local
         # flags would not survive; such functions keep NZCV in c->nzcv.
         # The same holds for registers in locals (recomp/regs.py): fb_<entry> keeps them in the Cpu too.
         local = not all_labels
         spill, reload, reload_call = (regs.SPILL, regs.RELOAD, regs.RELOAD_CALL) if local else ('', '', '')
         succ = self.flow(insns, entry, end, tables) if local else None
+        if succ is not None:
+            for a, (_, t, _, _) in guards.items():   # the guard's branch is an edge of the flow like any other
+                succ[(a - entry) // 4].append((t - entry) // 4)
         fp = self.flag_plan(insns, entry, end, tables, succ) if local else None
         if fp and fp.used:
             self.stats['local_flag_functions'] += 1
@@ -414,6 +424,11 @@ class Emitter:
             if a in labels:
                 emit(None, f'L_{a:x}:;')
             k = ins.kind
+            if a in guards:
+                gk, gt, kind, r = guards[a]
+                self.uses_patches = self.uses_guards = True
+                self.stats['guards'] += 1
+                emit(i, f'    if (rt_patch_on[{gk}] && !rt_guard_{kind}(c->x[{r}])) {{ goto L_{gt:x}; }}')
             if a in self.patched:
                 emit(i, patch(i, ins, a))
             elif k == 'op':
@@ -483,6 +498,8 @@ def chunk_text(name, number, emitter, fns):
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
     if emitter.uses_patches:
         protos += 'extern uint8_t rt_patch_on[];\n'
+    if getattr(emitter, 'uses_guards', False):
+        protos += 'int rt_guard_ptr(uint64_t p);\nint rt_guard_vcall(uint64_t obj);\n'
     return (header(f'{name} chunk {number:04d}') + '#include "cpu.h"\n#include "simd.h"\n\n' + protos + '\n'
             + '\n\n'.join(body) + '\n')
 
@@ -538,7 +555,8 @@ def _emitter(name):
         mod = Module(name, path, base, 'c')
         e = _W['emitters'][name] = Emitter(mod, set(_W['starts'][name].tolist()),
                                            _W['patches'].for_module(name, base),
-                                           spins=_W['patches'].spins_for(name, base), **_W['opts'])
+                                           spins=_W['patches'].spins_for(name, base),
+                                           guards=_W['patches'].guards_for(name, base), **_W['opts'])
     return e
 
 

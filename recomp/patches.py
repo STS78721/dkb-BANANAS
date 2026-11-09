@@ -8,6 +8,10 @@ Lifted code cannot be byte-patched when the game runs, so a patch is applied whe
 
   spin <module> <head> <back-edge> [<back-edge> ...]
 
+  guard <set> <module> <address> <target> <kind> x<n>
+                                            before the instruction at <address>, when the set is on and the runtime's
+                                            check rt_guard_<kind>(x<n>) fails, go to <target> in the same function
+
 <address> is a module offset (hex), <original> the instruction word the module has there (checked; a mismatch stops
 the generator), each <replacement> an instruction word (hex) or `@page:x<n>`, which is `adrp x<n>, <patch page>`
 encoded for the site's address. The patch page is the first 4 KiB page after main's image (layout.py leaves the rest
@@ -23,14 +27,20 @@ words must not branch except a final `bl` (lifted with the site's return address
 other than `bl`. So the function's control flow, labels and jump tables are the original's. The generator writes
 patches.h (set names, switches, the page address) next to layout.h for the runtime.
 
+A `guard` line adds a check before an instruction and a branch to an instruction of the same function, for game code
+that would follow a bad pointer: the check is a runtime function of one register (runtime/patches.c rt_guard_<kind>),
+and the branch is an edge of the function's flow like any other, so the register and flag plans see it.
+
 A `spin` line names a spin wait found by tools/spin_waits.py: a loop with head <head> that only another thread can end,
 and the direct branches back to it (module offsets). Each back-edge (checked: a b, b.cond, cbz / cbnz or tbz / tbnz to
 <head>) is lifted as `rt_spin_gate(c, <head>); goto <head>`, which keeps every register and only adds time
 (runtime/kernel.c kern_spin_gate).
 """
+import re
 from pathlib import Path
 
 PAGE = 0x1000
+GUARD_KINDS = ('ptr', 'vcall')   # runtime/patches.c rt_guard_ptr, rt_guard_vcall
 
 
 class PatchError(ValueError):
@@ -48,11 +58,16 @@ def adrp(pc, target, rd):
 class Table:
     """sets: [(name, env, default)]; sites: {module: {offset: (set index, [word | ('page', reg)], original)}}; page."""
 
-    def __init__(self, sets=(), sites=None, page=0, spins=None):
+    def __init__(self, sets=(), sites=None, page=0, spins=None, guards=None):
         self.sets = list(sets)
         self.sites = sites or {}
         self.page = page
         self.spins = spins or {}   # {module: {back-edge offset: head offset}}
+        self.guards = guards or {}   # {module: {offset: (set index, target offset, kind, register)}}
+
+    def guards_for(self, name, base):
+        """{absolute address: (set index, absolute target, kind, register)}."""
+        return {base + o: (k, base + t, kind, r) for o, (k, t, kind, r) in self.guards.get(name, {}).items()}
 
     def spins_for(self, name, base):
         """{absolute back-edge address: absolute head address}."""
@@ -69,7 +84,7 @@ class Table:
 
 def load(path, mods):
     """Table from a patch file; mods is layout() output [(name, base, size)]."""
-    sets, index, sites, spins = [], {}, {}, {}
+    sets, index, sites, spins, guards = [], {}, {}, {}, {}
     bases = {n: (b, s) for n, b, s in mods}
     for no, raw in enumerate(Path(path).read_text().splitlines(), 1):
         f = raw.split('#', 1)[0].split()
@@ -97,6 +112,18 @@ def load(path, mods):
             if off in mod:
                 raise PatchError(f'{where}: {f[2]}+{off:#x} patched twice')
             mod[off] = (index[f[1]], repl, orig)
+        elif f[0] == 'guard' and len(f) == 7:
+            if f[1] not in index:
+                raise PatchError(f'{where}: unknown set {f[1]}')
+            if f[2] not in bases:
+                raise PatchError(f'{where}: module {f[2]} not in the layout')
+            if f[5] not in GUARD_KINDS or not re.fullmatch(r'x([0-9]|[12][0-9]|30)', f[6]):
+                raise PatchError(f'{where}: guard kind {f[5]} or register {f[6]} is not known')
+            mod = guards.setdefault(f[2], {})
+            off = int(f[3], 16)
+            if off in mod:
+                raise PatchError(f'{where}: {f[2]}+{off:#x} guarded twice')
+            mod[off] = (index[f[1]], int(f[4], 16), f[5], int(f[6][1:]))
         elif f[0] == 'spin' and len(f) >= 4:
             if f[1] not in bases:
                 raise PatchError(f'{where}: module {f[1]} not in the layout')
@@ -113,7 +140,7 @@ def load(path, mods):
     nxt = min((b for _, b, _ in mods if b > base), default=None)
     if nxt is not None and page + PAGE > nxt:
         raise PatchError(f'no room for the patch page after main ({page:#x})')
-    return Table(sets, sites, page, spins)
+    return Table(sets, sites, page, spins, guards)
 
 
 def check(table, mod, name):
@@ -125,6 +152,9 @@ def check(table, mod, name):
         have = mod.word(a)
         if have != want:
             raise PatchError(f'{name}+{off:#x}: module has {have:08x}, the patch expects {want:08x}')
+    for off, (_, target, _, _) in table.guards.get(name, {}).items():
+        if not mod.in_text(mod.base + off) or not mod.in_text(mod.base + target):
+            raise PatchError(f'{name}+{off:#x}: guard or its target {name}+{target:#x} outside .text')
     for b, head in table.spins.get(name, {}).items():
         a = mod.base + b
         if not mod.in_text(a) or branch_target(mod.word(a), a) != mod.base + head:
