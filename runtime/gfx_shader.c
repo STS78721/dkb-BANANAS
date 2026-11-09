@@ -1369,7 +1369,7 @@ static void use_store(const uint8_t h[32], const UseMask *m) {
     char p[PATH_CAP + 80];
     use_path(h, p);
     uint32_t f[5] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts};
-    plat_file_write_atomic(p, f, sizeof f);
+    plat_file_write_cache(p, f, sizeof f);
     plat_mutex_lock(&cache_lock);
     use_put(h, 1, m);
     plat_mutex_unlock(&cache_lock);
@@ -1912,13 +1912,23 @@ static void in_path(const uint8_t iid[32], char *p) {
     snprintf(p, PATH_CAP + 80, "%s/in/%s.in", cache_dir, hex);
 }
 
+static int in_load_from(const uint8_t iid[32], Inputs *in, int packed);
+
 // Stores the inputs of a translation unless they are stored already; the file appears whole (written, then renamed).
+// A stored file that does not load (torn by a power loss) is written again.
 static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, const uint8_t *code, const Req *r,
                      const GfxShaderAnswers *a) {
     if (nvn_geometry_control_get(control, CONTROL_SIZE, code, r->length, NULL) < 0) return;
     char p[PATH_CAP + 80], tmp[PATH_CAP + 120];
     in_path(iid, p);
-    if (pack_find(PACK_IN, iid) || file_exists(p)) return;
+    if (pack_find(PACK_IN, iid)) return;
+    if (file_exists(p)) {
+        Inputs old;
+        if (in_load_from(iid, &old, 0)) {
+            free(old.buf);
+            return;
+        }
+    }
     int gs = stage == GFX_STAGE_GS;
     InHeader h = {IN_MAGIC, gs ? GS_IN_VERSION : IN_VERSION, (uint32_t)stage, r->length, r->c1_len,
                   gs ? GS_ANS_PACKED : LEGACY_ANS_SIZE};
@@ -1934,7 +1944,7 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
     if (r->c1_len) memcpy(o, r->c1, r->c1_len);
     snprintf(tmp, PATH_CAP + 120, "%s/in", cache_dir);
     mkdir_p(tmp);
-    plat_file_write_atomic(p, buf, n);
+    plat_file_write_cache(p, buf, n);
     free(buf);
 }
 
@@ -2098,7 +2108,8 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         plat_file_delete(spv_path), plat_file_delete(res_path);
         return fail(reply, hex);
     }
-    plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them; on disk before use or rename
+    // No flush to the disk: the cache readers reject a torn file (disk_load_from, use and input checks), so a power loss
+    // costs a translation, while an fsync per file cost seconds on a cold cache.
     if (!(s = request_disk_load(r, key, r->iid))) return fail("translator output missing or malformed", hex);
     if (!r->final) {                                       // name the files after the cache key, remember the mask
         m = use_of(s);
@@ -2106,9 +2117,9 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         char mhex[65], to[PATH_CAP + 80];
         key_hex(mk, mhex);
         snprintf(to, PATH_CAP + 80, "%s/%s.spv", cache_dir, mhex);
-        int moved = plat_file_replace(spv_path, to);
+        int moved = plat_file_replace_cache(spv_path, to);
         snprintf(to, PATH_CAP + 80, "%s/%s.res.json", cache_dir, mhex);
-        moved = moved && plat_file_replace(res_path, to);
+        moved = moved && plat_file_replace_cache(res_path, to);
         if (moved) {
             use_store(r->code_hash, &m);
         } else {                                           // keep the mask for this run only

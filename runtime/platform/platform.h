@@ -255,7 +255,12 @@ int plat_file_replace(const char *from, const char *to);  // rename, replacing t
 // Writes path.<pid>.<tid>.tmp, flushes it to the disk and renames it over path: a crash leaves the old file or the new
 // one, never a torn or zero-filled one. 1 on success.
 int plat_file_write_atomic(const char *path, const void *data, size_t n);
-int plat_file_flush(const char *path);                   // flushes a written file's data to the disk; 1 on success
+// For cache files that can be derived again (the shader cache): as plat_file_write_atomic and plat_file_replace
+// without the flush to the disk, which costs milliseconds per file. The rename keeps a process crash from leaving a
+// torn file; only a power loss can, and the reader (disk_load_from in gfx_shader.c) rejects it and translates again.
+int plat_file_write_cache(const char *path, const void *data, size_t n);
+int plat_file_replace_cache(const char *from, const char *to);
+int plat_file_flush(const char *path);                  // flushes a written file's data to the disk; 1 on success
 int plat_file_sync(FILE *f);                              // fflush, then the file's data to the disk; 1 on success
 // fseek and ftell with 64-bit offsets (a long is 32 bits on Windows).
 #ifdef _WIN32

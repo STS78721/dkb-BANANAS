@@ -173,6 +173,7 @@ static int plat_file_write_atomic(const char *path,const void *data,size_t n) {
     FILE *f=fopen(path,"wb"); if (!f) return 0;
     int ok=fwrite(data,1,n,f)==n; return fclose(f)==0 && ok;
 }
+static int plat_file_write_cache(const char *path,const void *data,size_t n) {return plat_file_write_atomic(path,data,n);}
 static int pack_read_at(uint64_t offset,void *out,uint32_t n) {
     if (offset>sizeof pack_data || n>sizeof pack_data-offset) return 0;
     memcpy(out,(uint8_t *)pack_data+offset,n); return 1;

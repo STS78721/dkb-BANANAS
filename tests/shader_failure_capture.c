@@ -64,9 +64,7 @@ int plat_fs_mkdir(const char* path) {
 #endif
 }
 static int plat_file_delete(const char* path) {return remove(path)==0;}
-static int plat_file_flush(const char* path) {(void)path;return 1;}
-static int plat_file_replace(const char* from,const char* to) {return rename(from,to)==0;}
-static void mkdir_p(const char* path) {(void)path;} // Python creates these owned directories first.
+static int plat_file_replace_cache(const char* from,const char* to) {return rename(from,to)==0;}static void mkdir_p(const char* path) {(void)path;} // Python creates these owned directories first.
 static int64_t plat_inc64(volatile int64_t* p) {return ++*p;}
 static void plat_mutex_lock(int* p) {(void)p;}
 static void plat_mutex_unlock(int* p) {(void)p;}

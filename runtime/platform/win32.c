@@ -434,6 +434,28 @@ int plat_file_write_atomic(const char *path, const void *data, size_t n) {
     return 0;
 }
 
+// See platform.h: replace and write_atomic for re-derivable cache files, without the flush to the disk.
+int plat_file_replace_cache(const char *from, const char *to) {
+    wchar_t a[WPATH], b[WPATH];
+    if (!widen(from, a, WPATH) || !widen(to, b, WPATH)) return 0;
+    return MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
+int plat_file_write_cache(const char *path, const void *data, size_t n) {
+    char tmp[WPATH + 48];
+    wchar_t a[WPATH], b[WPATH];
+    int len = snprintf(tmp, sizeof tmp, "%s.%u.%u.tmp", path, (unsigned)GetCurrentProcessId(), (unsigned)GetCurrentThreadId());
+    if (len < 0 || len >= (int)sizeof tmp || !widen(tmp, a, WPATH) || !widen(path, b, WPATH)) return 0;
+    HANDLE h = CreateFileW(a, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    DWORD put = 0;
+    int ok = WriteFile(h, data, (DWORD)n, &put, NULL) && put == n;
+    CloseHandle(h);
+    if (ok && MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING)) return 1;
+    DeleteFileW(a);
+    return 0;
+}
+
 int plat_file_flush(const char *path) {
     wchar_t w[WPATH];
     if (!widen(path, w, WPATH)) return 0;
