@@ -1,8 +1,8 @@
 """Fragment modules through the real spirv_nan_guard (runtime/spirv_nan_guard.c), checked with spirv-val. No Vulkan, GPU
 or game runs.
 
-It checks that a whole-vector store and per-component stores through access chains each get one OpIsNan and one
-OpSelect per float, that the selects pick the marker constant of their component, and that integer outputs, built-in
+It checks that a whole-vector store and per-component stores through access chains each get one OpBitcast, OpBitwiseAnd,
+OpUGreaterThan and OpSelect per float, that the selects pick the marker constant of their component, and that integer outputs, built-in
 outputs and vertex stages are refused. It does not execute the shaders.
 """
 import argparse
@@ -12,7 +12,8 @@ import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-OP_TYPE_BOOL, OP_CONSTANT, OP_STORE, OP_COMPOSITE_CONSTRUCT, OP_IS_NAN, OP_SELECT = 20, 43, 62, 80, 156, 169
+OP_TYPE_BOOL, OP_TYPE_INT, OP_CONSTANT, OP_STORE, OP_COMPOSITE_CONSTRUCT = 20, 21, 43, 62, 80
+OP_BITCAST, OP_BITWISE_AND, OP_UGREATER_THAN, OP_SELECT = 124, 199, 172, 169
 MARKER = (16.0, 0.0, 4.0, 1.0)
 
 
@@ -24,7 +25,7 @@ def f32(x):
     return struct.unpack('<I', struct.pack('<f', x))[0]
 
 
-def module(stage=4, per_component=False, int_output=False, builtin=False, with_bool=True):
+def module(stage=4, per_component=False, int_output=False, builtin=False, with_bool=True, scalar=False):
     """A shader that stores a vec4 to one output, whole or one component at a time. Ids are fixed; bound is 40."""
     (MAIN, OUT, VOID, FN, SCALAR, VEC, PTR, ZERO, VALUE, ENTRY, BOOL, INT, PTR1, *IDX) = range(1, 18)
     w = [0x07230203, 0x00010300, 0, 40, 0]
@@ -45,13 +46,16 @@ def module(stage=4, per_component=False, int_output=False, builtin=False, with_b
     if builtin:
         w += instr(32, PTR, 3, SCALAR) + instr(59, PTR, OUT, 3)
         w += instr(OP_CONSTANT, SCALAR, ZERO, 0)
+    elif scalar:
+        w += instr(32, PTR, 3, SCALAR) + instr(59, PTR, OUT, 3)
+        w += instr(OP_CONSTANT, SCALAR, ZERO, 0)
     else:
         w += instr(23, VEC, SCALAR, 4) + instr(32, PTR, 3, VEC) + instr(32, PTR1, 3, SCALAR) + instr(59, PTR, OUT, 3)
         w += instr(OP_CONSTANT, SCALAR, ZERO, 0) + instr(44, VEC, VALUE, ZERO, ZERO, ZERO, ZERO)
         for c, i in enumerate(IDX):
             w += instr(OP_CONSTANT, index_type, i, c)
     w += instr(54, VOID, MAIN, 0, FN) + instr(248, ENTRY)
-    if builtin:
+    if builtin or scalar:
         w += instr(OP_STORE, OUT, ZERO)
     elif per_component:
         for c, i in enumerate(IDX):
@@ -75,7 +79,7 @@ def ops(words):
 class NanGuard(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        args.out.mkdir(parents=True, exist_ok=False)
+        args.out.mkdir(parents=True, exist_ok=True)
         harness = args.out / 'harness.c'
         harness.write_text(r'''#include <stdio.h>
 #include <stdlib.h>
@@ -121,23 +125,37 @@ int main(int argc, char **argv) {
         consts = {a[1]: a[2] for op, a in found if op == OP_CONSTANT}
         return [consts[a[3]] for op, a in found if op == OP_SELECT]
 
+    def check_sequence(self, found, floats):
+        for op in (OP_BITCAST, OP_BITWISE_AND, OP_UGREATER_THAN, OP_SELECT):
+            self.assertEqual(sum(o == op for o, _ in found), floats, op)
+
     def test_a_whole_vector_store_is_guarded_per_component(self):
         stores, found = self.run_guard('whole', module())
         self.assertEqual(stores, 1)
-        self.assertEqual(sum(op == OP_IS_NAN for op, _ in found), 4)
+        self.check_sequence(found, 4)
         self.assertEqual(sum(op == OP_COMPOSITE_CONSTRUCT for op, _ in found), 1)
         self.assertEqual(self.markers_selected(found), [f32(x) for x in MARKER])
 
     def test_component_stores_pick_their_component_marker(self):
         stores, found = self.run_guard('components', module(per_component=True))
         self.assertEqual(stores, 4)
-        self.assertEqual(sum(op == OP_IS_NAN for op, _ in found), 4)
+        self.check_sequence(found, 4)
         self.assertEqual(self.markers_selected(found), [f32(x) for x in MARKER])
+
+    def test_a_scalar_output_is_guarded_once(self):
+        stores, found = self.run_guard('scalar', module(scalar=True))
+        self.assertEqual(stores, 1)
+        self.check_sequence(found, 1)
+        self.assertEqual(sum(op == OP_COMPOSITE_CONSTRUCT for op, _ in found), 0)
 
     def test_a_missing_bool_type_is_added(self):
         stores, found = self.run_guard('no_bool', module(with_bool=False))
         self.assertEqual(stores, 1)
         self.assertEqual(sum(op == OP_TYPE_BOOL for op, _ in found), 1)
+
+    def test_an_existing_uint_type_is_reused(self):
+        _, found = self.run_guard('uint', module())
+        self.assertEqual(sum(op == OP_TYPE_INT and a[1:] == [32, 0] for op, a in found), 1)
 
     def test_other_modules_are_refused(self):
         self.assertIsNone(self.run_guard('int_output', module(int_output=True)))

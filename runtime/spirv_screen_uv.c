@@ -57,9 +57,9 @@ uint32_t *spirv_screen_uv(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     uint32_t *loc = malloc((size_t)bound * 4), *ptr_sc = calloc(bound, 4), *ptr_to = calloc(bound, 4);
     uint32_t *const_val = calloc(bound, 4), *const_type = calloc(bound, 4), *var_sc = calloc(bound, 4);
     uint32_t *var_type = calloc(bound, 4), *chain_of = calloc(bound, 4), *chain_comp = calloc(bound, 4);
-    uint8_t *noper = calloc(bound, 1);
+    uint8_t *noper = calloc(bound, 1), *img2d = calloc(bound, 1);   // img2d: OpTypeImage ids that are 2D, non-arrayed, single-sampled
     uint32_t *out = NULL;
-    if (!loc || !ptr_sc || !ptr_to || !const_val || !const_type || !var_sc || !var_type || !chain_of || !chain_comp ||
+    if (!img2d || !loc || !ptr_sc || !ptr_to || !const_val || !const_type || !var_sc || !var_type || !chain_of || !chain_comp ||
         !noper)
         goto done;
     memset(loc, 0xff, (size_t)bound * 4);
@@ -88,7 +88,8 @@ uint32_t *spirv_screen_uv(const uint32_t *w, uint64_t n, uint64_t *out_n) {
             if (a[1] == f32 && a[2] == 2) v2f = a[0];
             if (a[1] == f32 && a[2] == 4) v4f = a[0];
             if (a[1] == i32 && i32 && a[2] == 2) v2i = a[0];
-        } else if (op == OP_TYPE_SAMPLED_IMAGE && len == 3 && a[0] < bound) const_type[a[0]] = a[1] | 0x80000000u;
+        } else if (op == OP_TYPE_IMAGE && len >= 9 && a[0] < bound) img2d[a[0]] = a[2] == 1 && !a[4] && !a[5];   // Dim2D
+        else if (op == OP_TYPE_SAMPLED_IMAGE && len == 3 && a[0] < bound) const_type[a[0]] = a[1] | 0x80000000u;
         else if (op == OP_TYPE_POINTER && len == 4 && a[0] < bound) ptr_sc[a[0]] = a[1], ptr_to[a[0]] = a[2];
         else if (op == OP_CONSTANT && len == 4 && a[1] < bound) const_val[a[1]] = a[2], const_type[a[1]] = a[0];
         else if (op == OP_VARIABLE && len >= 4 && a[1] < bound && a[0] < bound) {
@@ -101,6 +102,7 @@ uint32_t *spirv_screen_uv(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     }
     if (!entry || !fn_at || !first_dec || !f32 || !i32 || !v2f || !v4f || !glsl || !has_query || n_sampled != 1)
         goto done;
+    if (image_type >= bound || !img2d[image_type]) goto done;   // the size query below is an ivec2 one
     uint32_t in_uv = 0, in_ray = 0;   // the NoPerspective vec4 inputs at Locations 1 and 0
     for (uint32_t id = 1; id < bound; id++)
         if (var_sc[id] == SC_INPUT && var_type[id] == v4f && noper[id]) {
@@ -112,11 +114,14 @@ uint32_t *spirv_screen_uv(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     // layout). Taken from the access chains below: the one indexed with constants 0, 14 (the depth constants).
     // Pass 2: the access chains into the two inputs and their component, and the shader's c3 variable.
     uint32_t uniform_float_ptr = 0, c0 = 0, c14 = 0;
+    int in_fn_entry = 0;
     for (uint64_t i = fn_at; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         if (!len || i + len > n) goto done;
         const uint32_t *a = w + i + 1;
+        if (op == OP_FUNCTION && len >= 3) in_fn_entry = a[1] == entry;
         if (op == OP_ACCESS_CHAIN && len == 5 && a[2] < bound && a[1] < bound && (a[2] == in_uv || a[2] == in_ray)) {
+            if (!in_fn_entry) goto done;   // the replacement values exist only in the entry function
             uint32_t k = a[3];
             if (k >= bound || const_type[k] != i32 || const_val[k] > 3) goto done;
             chain_of[a[1]] = a[2], chain_comp[a[1]] = const_val[k];
@@ -215,6 +220,6 @@ uint32_t *spirv_screen_uv(const uint32_t *w, uint64_t n, uint64_t *out_n) {
     out = b.o;
 done:
     free(loc), free(ptr_sc), free(ptr_to), free(const_val), free(const_type), free(var_sc), free(var_type);
-    free(chain_of), free(chain_comp), free(noper);
+    free(chain_of), free(chain_comp), free(noper), free(img2d);
     return out;
 }

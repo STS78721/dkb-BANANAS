@@ -1787,18 +1787,20 @@ static const GfxShader *get_one(const Req *r, int stage, const uint8_t *control,
     return t;
 }
 
-// DKB_DUMP_SPV only: remember which NVN 2 stage a shader was got for (the lowered code pointer is only known here).
-// Idempotent aligned 64-bit store; a shader shared by two stages keeps the last one.
 // NVN 2 stage origins by input id, kept in <shader cache>/nvn2-origins.bin (40-byte records: the input id, then the
 // origin, little-endian). An origin is known only where the stage's code was lowered in this process (nvn2_origin),
 // and the boot prewarm builds pipelines from the shader cache without lowering anything: the table carries each
 // origin, met while the game or --translate-shaders lowered the stage, over to later runs. Fixes keyed by origin
 // (vk_pipeline.c screen_uv_stage) need it there. An input id does not depend on the translator, so a new translator
-// keeps the table. A torn last record (a crash while appending) is ignored.
+// keeps the table. A torn last record (a crash while appending) is ignored, and the next append overwrites it, so
+// records stay on 40-byte boundaries. note_origin records the origin of every stage it meets (the lowered code pointer
+// is only known there) in the shader and, for an input id not in the table yet, in the file: a shader shared by two
+// stages keeps the first one seen, and the file does not grow on later runs.
 #define ORIGIN_SLOTS (1u << 16)
 typedef struct { uint8_t iid[32]; uint64_t origin; } OriginRec;
 static OriginRec *origin_tab;            // open addressing on the first 4 bytes of the id; origin 0 marks a free slot
 static uint32_t origin_used;
+static long origin_good;                 // bytes of whole records in the file when it was loaded
 static PlatMutex origin_lock = PLAT_MUTEX_INIT;
 static PlatOnce origin_once = PLAT_ONCE_INIT;
 
@@ -1833,6 +1835,7 @@ static void origin_load(void *param) {
     while (fread(buf, 1, sizeof buf, f) == sizeof buf) {
         memcpy(r.iid, buf, 32), memcpy(&r.origin, buf + 32, 8);
         if (r.origin) origin_put(r.iid, r.origin);
+        origin_good += sizeof buf;
     }
     fclose(f);
 }
@@ -1844,8 +1847,8 @@ static void note_origin(const GfxShader *s, const uint8_t *code) {
     __atomic_store_n(&((GfxShader *)s)->origin, o, __ATOMIC_RELAXED);
     plat_once(&origin_once, origin_load, NULL);
     plat_mutex_lock(&origin_lock);
-    OriginRec *r = origin_tab ? origin_slot(s->iid) : NULL;
-    if (r && r->origin != o && cache_dir[0]) {
+    OriginRec *r = origin_tab && origin_used < ORIGIN_SLOTS * 3 / 4 ? origin_slot(s->iid) : NULL;
+    if (r && !r->origin && cache_dir[0]) {
         static FILE *append;   // kept open: --translate-shaders notes thousands of stages from several threads
         static int tried;
         origin_put(s->iid, o);
@@ -1853,7 +1856,9 @@ static void note_origin(const GfxShader *s, const uint8_t *code) {
             tried = 1;
             char path[PATH_CAP + 32];
             snprintf(path, sizeof path, "%s/nvn2-origins.bin", cache_dir);
-            append = fopen(path, "ab");
+            append = fopen(path, "r+b");   // not "ab": a torn tail must be overwritten, not appended after
+            if (append && fseek(append, origin_good, SEEK_SET)) fclose(append), append = NULL;
+            if (!append) append = fopen(path, "ab");
         }
         if (append) {
             uint8_t buf[40];

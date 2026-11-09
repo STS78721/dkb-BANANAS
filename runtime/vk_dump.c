@@ -454,7 +454,7 @@ static void buf_snap(VkExec *ex, int pass) {
 
 static int active(void) {
     uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    return !finished && (f == dump_frame || (log_from && f >= log_from && f < dump_frame));
+    return !finished && (f == dump_frame || (log_from && f >= log_from && dump_frame != UINT64_MAX && f < dump_frame));   // TOTK_DUMP=key logs only once F9 chose the frame
 }
 static uint64_t frame_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1; }
 

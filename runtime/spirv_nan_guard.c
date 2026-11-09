@@ -10,8 +10,9 @@
 //
 // The rewrite sits at the end of that path: every OpStore to a float fragment output (Location decorated, 32-bit
 // float scalar or vector, through the variable itself or an access chain into it) stores
-//   isnan(v) ? marker[c] : v
-// for each component c. With a marker of 0 the texel turns black instead of spreading; with a coloured marker
+//   (bits(v) & 0x7fffffff) > 0x7f800000 ? marker[c] : v
+// for each component c. The test is on the bits because the translator never asks for SignedZeroInfNanPreserve, so a
+// driver may fold OpIsNan to false. With a marker of 0 the texel turns black instead of spreading; with a coloured marker
 // (DKB_NAN_GUARD=mark) the texels show which shader wrote NaN. Integer outputs are left alone: the translator types
 // each output by its render target's format, so a float output holds no integer bits.
 #include <stdint.h>
@@ -21,10 +22,10 @@
 #include "spirv_nan_guard.h"
 
 enum {
-    OP_ENTRY_POINT = 15, OP_TYPE_BOOL = 20, OP_TYPE_FLOAT = 22, OP_TYPE_VECTOR = 23, OP_TYPE_POINTER = 32,
+    OP_ENTRY_POINT = 15, OP_TYPE_BOOL = 20, OP_TYPE_INT = 21, OP_TYPE_FLOAT = 22, OP_TYPE_VECTOR = 23, OP_TYPE_POINTER = 32,
     OP_CONSTANT = 43, OP_FUNCTION = 54, OP_VARIABLE = 59, OP_STORE = 62, OP_ACCESS_CHAIN = 65,
     OP_IN_BOUNDS_ACCESS_CHAIN = 66, OP_DECORATE = 71, OP_COMPOSITE_CONSTRUCT = 80, OP_COMPOSITE_EXTRACT = 81,
-    OP_IS_NAN = 156, OP_SELECT = 169,
+    OP_BITCAST = 124, OP_BITWISE_AND = 199, OP_UGREATER_THAN = 172, OP_SELECT = 169,
     DEC_BUILTIN = 11, DEC_LOCATION = 30, SC_OUTPUT = 3, MODEL_FRAGMENT = 4,
 };
 
@@ -54,6 +55,17 @@ static uint32_t f32_bits(float f) {
     return u;
 }
 
+// One float component: select(bits(v) & 0x7fffffff > 0x7f800000, marker, v). Returns the result id.
+static uint32_t guard_one(Buf *b, uint32_t *next, uint32_t f32, uint32_t u32, uint32_t boolt, uint32_t abs_mask,
+                          uint32_t inf, uint32_t marker, uint32_t val) {
+    uint32_t u = (*next)++, m = (*next)++, t = (*next)++, s = (*next)++;
+    PUT(b, 4u << 16 | OP_BITCAST, u32, u, val);
+    PUT(b, 5u << 16 | OP_BITWISE_AND, u32, m, u, abs_mask);
+    PUT(b, 5u << 16 | OP_UGREATER_THAN, boolt, t, m, inf);
+    PUT(b, 6u << 16 | OP_SELECT, f32, s, t, marker, val);
+    return s;
+}
+
 uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], uint64_t *out_n, unsigned *n_stores) {
     *n_stores = 0;
     if (n < 5 || w[0] != 0x07230203) return NULL;
@@ -71,7 +83,7 @@ uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], 
     if (!fwidth || !has_loc || !builtin || !ptr_sc || !ptr_to || !const_val || !is_const || !guard || !chain ||
         !var_type || !chain_comp)
         goto done;
-    uint32_t f32 = 0, boolt = 0;
+    uint32_t f32 = 0, boolt = 0, u32 = 0;
     int fragment = 0, nguard = 0;
     uint64_t fn_at = 0;
     for (uint64_t i = 5; i < n;) {
@@ -86,6 +98,7 @@ uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], 
             if (a[1] == DEC_LOCATION) has_loc[a[0]] = 1;
             if (a[1] == DEC_BUILTIN) builtin[a[0]] = 1;
         } else if (op == OP_TYPE_BOOL && len == 2) boolt = a[0];
+        else if (op == OP_TYPE_INT && len == 4 && a[1] == 32 && !a[2]) u32 = a[0];
         else if (op == OP_TYPE_FLOAT && len == 3 && a[1] == 32 && a[0] < bound) f32 = a[0], fwidth[a[0]] = 1;
         else if (op == OP_TYPE_VECTOR && len == 4 && a[0] < bound && f32 && a[1] == f32 && a[2] <= 4)
             fwidth[a[0]] = (uint8_t)(a[2] + 1);
@@ -104,7 +117,8 @@ uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], 
 
     uint32_t next = bound;
     uint32_t new_bool = boolt ? 0 : next++, use_bool = boolt ? boolt : new_bool;
-    uint32_t mk[4];
+    uint32_t new_u32 = u32 ? 0 : next++, use_u32 = u32 ? u32 : new_u32;
+    uint32_t abs_mask = next++, inf = next++, mk[4];
     for (int c = 0; c < 4; c++) mk[c] = next++;
     put(&b, w, 5);
     for (uint64_t i = 5; i < n;) {
@@ -113,6 +127,9 @@ uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], 
         const uint32_t *a = w + i + 1;
         if (i == fn_at) {   // the end of the declarations: the bool type if missing and the marker constants
             if (new_bool) PUT(&b, 2u << 16 | OP_TYPE_BOOL, new_bool);
+            if (new_u32) PUT(&b, 4u << 16 | OP_TYPE_INT, new_u32, 32, 0);
+            PUT(&b, 4u << 16 | OP_CONSTANT, use_u32, abs_mask, 0x7fffffffu);
+            PUT(&b, 4u << 16 | OP_CONSTANT, use_u32, inf, 0x7f800000u);
             for (int c = 0; c < 4; c++) PUT(&b, 4u << 16 | OP_CONSTANT, f32, mk[c], f32_bits(marker[c]));
         }
         if ((op == OP_ACCESS_CHAIN || op == OP_IN_BOUNDS_ACCESS_CHAIN) && len >= 5 && a[1] < bound && a[2] < bound &&
@@ -123,19 +140,15 @@ uint32_t *spirv_nan_guard(const uint32_t *w, uint64_t n, const float marker[4], 
         } else if (op == OP_STORE && len >= 3 && a[0] < bound && (chain[a[0]] || guard[a[0]])) {
             uint32_t ptr = a[0], val = a[1];
             uint32_t width = chain[ptr] ? 1 : fwidth[var_type[ptr]] - 1;
-            if (chain[ptr] || width == 1) {   // one float
-                uint32_t c = chain[ptr] ? chain_comp[ptr] : 0, t = next++, s = next++;
-                PUT(&b, 4u << 16 | OP_IS_NAN, use_bool, t, val);
-                PUT(&b, 6u << 16 | OP_SELECT, f32, s, t, mk[c], val);
-                val = s;
+            if (chain[ptr] || width <= 1) {   // one float
+                uint32_t c = chain[ptr] ? chain_comp[ptr] : 0;
+                val = guard_one(&b, &next, f32, use_u32, use_bool, abs_mask, inf, mk[c], val);
             } else {   // a whole vector: per component, then put back together
                 uint32_t vt = var_type[ptr], parts[4], r = next++;
                 for (uint32_t c = 0; c < width; c++) {
-                    uint32_t e = next++, t = next++, s = next++;
+                    uint32_t e = next++;
                     PUT(&b, 5u << 16 | OP_COMPOSITE_EXTRACT, f32, e, val, c);
-                    PUT(&b, 4u << 16 | OP_IS_NAN, use_bool, t, e);
-                    PUT(&b, 6u << 16 | OP_SELECT, f32, s, t, mk[c], e);
-                    parts[c] = s;
+                    parts[c] = guard_one(&b, &next, f32, use_u32, use_bool, abs_mask, inf, mk[c], e);
                 }
                 uint32_t hdr = (3 + width) << 16 | OP_COMPOSITE_CONSTRUCT, head[2] = {vt, r};
                 put(&b, &hdr, 1);
