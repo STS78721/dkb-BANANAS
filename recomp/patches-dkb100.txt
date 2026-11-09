@@ -6,3 +6,27 @@ set hidproxy DKB_SKIP_HID_PROXY 1
 # a transfer memory and talks to IHidServer itself (nn::hid::server::CreateHidServerProxy), past the nn::hid calls the
 # host takes over, and aborts on a failed Result. The host serves no "hid" IPC service, so the call reports success.
 site hidproxy main 73bea0 9404d9d0 2a1f03e0   # bl sub_71008725E0 -> mov w0, wzr
+
+# Layer changes (#126). The parallel loop main+0x410680 walks a list of entries, each naming a cell of a 3D grid (a
+# 0x4f58-byte object whose address comes from the entry's id through the owner's layer table, owner+0x488), and makes a
+# devirtualised call on the cell. While a layer hands over to the next one (Lagoon to Hilltop, Hilltop to Canyon,
+# Canyon to Branch, Branch to Forest), dozens of its 4,500 entries and of the cells they name hold reused memory:
+# float data as an id (0x3f7fff58), a layer the table does not have, a cell never constructed (vtable 0), a "cell"
+# inside main's code, a cell whose own pointers (+0x48, +0x4f10) are garbage. Without these guards the game crashes
+# in this loop at every one of those transitions (17 of 17 runs at the first one). Why the memory is reused while the
+# list still names it is not known; these are workarounds that keep such an entry out of the loop's work, each through
+# a path of the loop itself:
+#   410df0: the layer record from the table load at 410dec, before its fields are read -> next entry (410d4c). The
+#           loop caches the last entry's id at [x29-0x2c] together with the record in x9; the guard sets that id to -1,
+#           so the next entry looks its record up again instead of reusing the bad one.
+#   41075c: the cell, before an entry flagged in bit 31 branches to 410eb8 (tbnz at 410764) and before its vtable slot
+#           +0x10 is loaded and compared or called at 410768 (only the fall-through reaches it) -> next entry.
+#   410ee0: the cell's +0x48 on the bit-31 path; 410edc already sends a null one to 41164c -> 41164c.
+#   410794: the cell's element array (+0x4f10, loaded at 410790) -> 410e54, the path of an index past the cell's count.
+# Every failed check is logged (runtime/patches.c guard_fail). Opt-out: DKB_FIX_POOL_GUARD=0. 1.0.0 only: update 3.2.0
+# (patches-dkb458752.txt) has no such guards yet.
+set poolguard DKB_FIX_POOL_GUARD 1
+guard poolguard main 410df0 410d4c ptr x9 f9401927 st32 x29 -2c ffffffff
+guard poolguard main 41075c 410d4c vcall x9 b940028a
+guard poolguard main 410ee0 41164c ptr x20 aa1403e0
+guard poolguard main 410794 410e54 ptr x10 f875794a
