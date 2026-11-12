@@ -259,6 +259,8 @@ int res_heapdef_build(const void *in, size_t n, void **out, size_t *out_n);   //
                                                            // the grown heaps, malloc'd; 0 = cannot (logged)
 void res_heapdef_served(void);                             // romfs.c serves the grown table
 void res_init(void);                                       // after rt_patches_init: the patch page and the sets
+void dkb_wide_init(void);                                  // Bananza: virtual display and render-target pool
+int dkb_wide_output(unsigned out[2]);                      // Bananza size in effect; the pointer may be null
 void res_sizes(unsigned out[2], unsigned scene[2]);      // the output and scene sizes in effect (the game's own
                                                            // until res_init switched the sets on)
 int res_is_16x9(unsigned w, unsigned h);                   // within 1% of 16:9 (the test res_init and romfs.c share)

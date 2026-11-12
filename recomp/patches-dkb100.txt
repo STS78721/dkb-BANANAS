@@ -53,3 +53,12 @@ spin main 375968 37597c   # recursive spin lock
 spin main 3a2c08 3a2c1c   # recursive spin lock
 spin main 56976c 569780   # recursive spin lock
 spin main 5803b4 5803c8   # recursive spin lock
+
+# Bananza virtual display. The retail getters are movz w0, #2880 and movz w0, #1620, and the
+# framework init writes a 200 MiB render-target pool sized for that picture (main+0x458adc).
+# Values live at page +0x100 width, +0x104 height, +0x108 aspect, +0x10c aspect/(16/9),
+# +0x110 pool bytes (runtime/dkb_wide.c). 16:9 only: the camera and HUD sites are not patched.
+set dkbwide DKB_ULTRAWIDE 0
+site dkbwide main 5ad9f0 52816800 @page:x0 b9410000
+site dkbwide main 5ada00 5280ca80 @page:x0 b9410400
+site dkbwide main 458adc 52a19009 @page:x9 b9411129

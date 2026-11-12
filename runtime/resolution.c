@@ -205,6 +205,10 @@ void res_heapdef_served(void) { R.heapdef_ok = 1; }
 static uint64_t pack(unsigned w, unsigned h) { return (uint64_t)h << 32 | w; }
 
 void res_init(void) {
+    if (!rt_game_version) {   // Bananza has no TotK output/scene sets; its display size is its own
+        dkb_wide_init();
+        return;
+    }
     if (!bigger()) {
         rt_log("resolution: the game's own (output 1920x1080, scene 1600x900)");
         return;
@@ -262,6 +266,7 @@ int res_is_16x9(unsigned w, unsigned h) {
 // The game resolution asks for a romfs-patches-<w>x<h> overlay: it is not 16:9 and the game version has the camera
 // aspect patch (set aspect); the UI layouts of another shape only fit a camera that follows the same shape.
 int res_wants_wide_overlay(const unsigned out[2]) {
+    if (!rt_game_version) return dkb_wide_output(NULL);
     return !res_is_16x9(out[0], out[1]) && rt_patch_set("aspect") >= 0;
 }
 
@@ -289,6 +294,10 @@ void res_fov_live(void) {
 }
 
 void res_wanted(unsigned out[2]) {
+    if (!rt_game_version) {
+        dkb_wide_output(out);
+        return;
+    }
     decide();
     out[0] = R.ow, out[1] = R.oh;
 }
