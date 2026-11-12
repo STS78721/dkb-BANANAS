@@ -2087,22 +2087,59 @@ void kern_event_signal(uint32_t hw) {
 }
 
 // System events of host services: the SDK's own nn::os::CreateSystemEvent creates the kernel event (SVC 0x45) on a
-// guest thread; the writable handle is kept, so any thread (host audio tick included) can signal it later.
-static struct { uint64_t ev; uint32_t wh; } g_se[512];
+// guest thread; the writable handle is kept, so any thread (host audio tick included) can signal it later. The
+// readable handle sits in the guest object at +0x18 (the writable one at +0x14). CreateSystemEvent stores 1 or 2 at
+// +0x28; nn::os::InitializeMultiWaitHolder aborts on any other byte. A movie restart (the F1 menu does this to the
+// guide movie) zeroes that object and creates the same event again, so a still-bound object with a cleared byte is
+// built again and the previous kernel event is closed.
+static struct { uint64_t ev; uint32_t wh, rh; } g_se[512];
 static int g_nse;
 static PlatMutex g_se_lock = PLAT_MUTEX_INIT;
 
+static int se_slot(uint64_t ev) {
+    for (int i = 0; i < g_nse; i++)
+        if (g_se[i].ev == ev) return i;
+    return -1;
+}
+
 static uint32_t se_find(uint64_t ev) {
     plat_mutex_lock_shared(&g_se_lock);
-    uint32_t wh = 0;
-    for (int i = 0; i < g_nse && !wh; i++)
-        if (g_se[i].ev == ev) wh = g_se[i].wh;
+    int s = se_slot(ev);
+    uint32_t wh = s < 0 ? 0 : g_se[s].wh;
     plat_mutex_unlock_shared(&g_se_lock);
     return wh;
 }
 
+static int se_live(uint64_t ev) {
+    uint8_t mode;
+    if (!ev || !plat_mem_readable(ev + 0x28, 1)) return 0;
+    memcpy(&mode, (const void *)(uintptr_t)(ev + 0x28), 1);
+    return mode == 1 || mode == 2;
+}
+
+static int event_handle(uint32_t h) {
+    lock();
+    int ok = h_peek(h, O_EVENT_W) || h_peek(h, O_EVENT_R);
+    unlock();
+    return ok;
+}
+
 void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
-    if (se_find(ev)) return;
+    plat_mutex_lock(&g_se_lock);
+    int slot = se_slot(ev);
+    int live = slot >= 0 && se_live(ev);
+    uint32_t old_w = 0, old_r = 0;
+    if (slot >= 0 && !live) {
+        old_w = g_se[slot].wh;
+        old_r = g_se[slot].rh;
+        g_se[slot].ev = 0;
+        g_se[slot].wh = 0;
+        g_se[slot].rh = 0;
+    }
+    plat_mutex_unlock(&g_se_lock);
+    if (live) return;
+    if (old_w && event_handle(old_w)) kern_handle_close(old_w);
+    if (old_r && old_r != old_w && event_handle(old_r)) kern_handle_close(old_r);
     if (!tcur || !c) rt_fatal("kern_bind_system_event(%#llx) on a host thread", (unsigned long long)ev);
     static uint64_t create, getw;
     if (!create) {
@@ -2113,10 +2150,27 @@ void kern_bind_system_event(Cpu *c, uint64_t ev, int autoclear) {
     uint32_t r = (uint32_t)rt_call(c, create, 3, ev, (uint64_t)(autoclear ? 1 : 0), (uint64_t)1);
     if (r) rt_fatal("kern_bind_system_event: CreateSystemEvent(%#llx) failed %#x", (unsigned long long)ev, r);
     uint32_t wh = (uint32_t)rt_call(c, getw, 1, ev);
+    uint32_t rh = 0;
+    if (plat_mem_readable(ev + 0x14, 8)) {
+        uint32_t a, b;
+        memcpy(&a, (const void *)(uintptr_t)(ev + 0x14), 4);
+        memcpy(&b, (const void *)(uintptr_t)(ev + 0x18), 4);
+        if (a == wh && event_handle(b)) rh = b;
+        else if (b == wh && event_handle(a)) rh = a;
+    }
     plat_mutex_lock(&g_se_lock);
-    if (g_nse == (int)(sizeof g_se / sizeof *g_se)) rt_fatal("kern_bind_system_event: table full");
-    g_se[g_nse].ev = ev;
-    g_se[g_nse++].wh = wh;
+    slot = se_slot(ev);
+    if (slot < 0) {
+        for (int i = 0; i < g_nse; i++)
+            if (!g_se[i].ev) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (g_nse == (int)(sizeof g_se / sizeof *g_se)) rt_fatal("kern_bind_system_event: table full");
+        slot = g_nse++;
+    }
+    g_se[slot].ev = ev;
+    g_se[slot].wh = wh;
+    g_se[slot].rh = rh;
     plat_mutex_unlock(&g_se_lock);
 }
 
