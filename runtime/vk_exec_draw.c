@@ -2298,7 +2298,11 @@ typedef struct {
 // family, and the same SPIR-V drawn on its own does not fault, so the cause is still open. Skipping these draws
 // loses those lights; the family's quads without an input at Location 9 draw as before. It is a mitigation, not a fix:
 // in 600 s runs on an RTX 5060 Ti the fault came minutes later in one run of two (another shader), where without it
-// every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws them.
+// every run faulted right after the first guide movie. TOTK_FIX_VS_FAULT=0 draws the named stages below too.
+//
+// The blanket skip (every Location 9 stage whose fragment shader reads c0+0x530, and every count<=6 draw whose
+// streams are all per-instance) also dropped the gameplay quads: ground punches, water splashes and sparks (#62).
+// Those draw again. Only the named cutscene stages that lost the device stay skipped.
 //
 // The later fault, around seven minutes in, comes from one more quad of the same shape whose fragment stage does not
 // read c0+0x530: NVN 2 vertex stage cae0ef8e9fe9147f, nine per-instance RGBA32F streams, one instance. In 9 runs of
@@ -2359,48 +2363,8 @@ static int light_quad_fault_skip(const VkExec *ex, const GfxShader *vs, const Gf
             return 1;
         }
     }
-    // Whitelist known-safe gameplay quads
-    if (orig == 0x782b2585777d2b4eull || orig == 0x392e2956038a9e64ull || orig == 0x7d85669ac430f01aull)
-        return 0;
-
-    GfxShaderIo io[32];
-    uint32_t used = gfx_shader_inputs(vs, io);
-    if (!(used >> 9 & 1)) return 0;
-
-    // Check if fragment shader reads light SSBO at c0+0x530
-    int lights = 0;
-    if (fs) {
-        const GfxShaderRes *r;
-        int n = gfx_shader_resources(fs, GFX_RES_SSBO, &r);
-        for (int i = 0; i < n; i++) lights |= r[i].cbuf_slot == 0 && r[i].handle * 4 == 0x530;
-    }
-    if (lights) {
-        warn_once(W_FAULT_SKIP, "light-quad draws with ten instance streams are skipped (#9; TOTK_FIX_VS_FAULT=0 draws them)");
-        return 1;
-    }
-
-    // Instanced light-quad draws in Bananza have count <= 6 (4-vertex quad or 6-vertex two-triangle quad)
-    // and every active vertex attribute stream is per-instance (divisor != 0).
-    // Legitimate 3D world meshes (skybox, cave walls, terrain) use per-vertex attributes (divisor == 0).
-    if (count > 0 && count <= 6) {
-        int all_instanced = 1, active_streams = 0;
-        for (int l = 0; l < 16; l++) {
-            if (!(used >> l & 1)) continue;
-            va_st va = {0};
-            memcpy(&va, &ex->pipe.vattr[l], sizeof va);
-            if (!va.fmt || va.stream >= 16) continue;
-            active_streams++;
-            if (ex->pipe.vstream[va.stream].divisor == 0) {
-                all_instanced = 0;
-                break;
-            }
-        }
-        if (all_instanced && active_streams >= 8) {
-            warn_once(W_FAULT_SKIP, "instanced light-quad draw is skipped (#9/cutscene; TOTK_FIX_VS_FAULT=0 draws them)");
-            return 1;
-        }
-    }
-
+    (void)fs;
+    (void)count;
     return 0;
 }
 

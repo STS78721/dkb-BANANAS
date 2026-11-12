@@ -30,3 +30,26 @@ guard poolguard main 410df0 410d4c ptr x9 f9401927 st32 x29 -2c ffffffff
 guard poolguard main 41075c 410d4c vcall x9 b940028a
 guard poolguard main 410ee0 41164c ptr x20 aa1403e0
 guard poolguard main 410794 410e54 ptr x10 f875794a
+
+# Recursive spin locks of main (tools/spin_waits.py): a thread that spins here with every virtual core taken starves the
+# lock owner, which needs a core to release the lock (heap and RomFS stalls, issue 126).
+spin main 185ac 185c0   # recursive spin lock
+spin main 1893c 18950   # recursive spin lock
+spin main 135b54 135b68   # recursive spin lock
+spin main 157908 15791c   # recursive spin lock
+spin main 157da8 157dbc   # recursive spin lock
+spin main 1580b4 1580c8   # recursive spin lock
+spin main 15944c 159460   # recursive spin lock
+spin main 1594b0 1594c4   # recursive spin lock
+spin main 15ab04 15ab18   # recursive spin lock
+spin main 192778 19278c   # recursive spin lock
+spin main 195544 195558   # recursive spin lock
+spin main 21a83c 21a850   # recursive spin lock
+spin main 22a770 22a784   # recursive spin lock
+spin main 22c030 22c044   # recursive spin lock
+spin main 253968 25397c   # recursive spin lock
+spin main 254ce4 254cf8   # recursive spin lock
+spin main 375968 37597c   # recursive spin lock
+spin main 3a2c08 3a2c1c   # recursive spin lock
+spin main 56976c 569780   # recursive spin lock
+spin main 5803b4 5803c8   # recursive spin lock
