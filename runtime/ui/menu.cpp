@@ -48,6 +48,7 @@ void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void vk_queue_lock(void);
 void vk_queue_unlock(void);
 void res_sizes(unsigned out[2], unsigned scene[2]);
+void vk_dlss_meter(char *b, int n);
 // Vulkan & GPU capabilities
 int vk_gpu_is_nvidia(void);
 int vk_gpu_is_rtx40_plus(void);
@@ -646,15 +647,18 @@ static void tab_screen(float scale) {
     opt_choice("DKB_PERF_OVERLAY", UI_MENU_PERF_OVERLAY, perf, 3, UI_MENU_PERF_OVERLAY_DESC);
     opt_group_text("Nodix Super Motion & Super Resolution");
     row_render_scale();
-    static const char *const up_vals[] = {"smrs", "fsr", "bilinear", "off"};
+    static const char *const up_vals[] = {"smrs", "fsr", "dlss", "bilinear", "off"};
     static const char *const up_names[] = {
         "Nodix Super Motion SMRS",
         "AMD FSR 1.0 (Native)",
+        "NVIDIA DLSS",
         "Bilinear (Clean Scaler)",
         "Off (Raw 1:1)"
     };
-    opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 4, UI_MENU_UPSCALER_DESC);
+    opt_choice_list("DKB_UPSCALER", UI_MENU_UPSCALER, up_vals, up_names, 5, UI_MENU_UPSCALER_DESC);
     const char *up = cfg_value("DKB_UPSCALER");
+    if (!strcmp(up, "dlss"))
+        opt_group_text("DLSS follows the game's scale: 100% DLAA K, 67% Quality K, 58% Balanced K, 50% Performance M, 33% Ultra Performance L. Motion vectors are dilated camera reprojection, matched to the previous frame where something moves on its own.");
     bool is_smrs = !strcmp(up, "smrs");
     bool is_fsr = !strcmp(up, "fsr");
     if (is_smrs) {
@@ -1114,7 +1118,7 @@ static int g_perf_frames;
 static char g_perf_text[96];
 static char g_perf_fps_num[32];
 static char g_perf_ms_num[32];
-static char g_perf_upscaler[64];
+static char g_perf_upscaler[80];
 static char g_perf_line2[160];
 static char g_perf_battery[24];
 static char g_perf_fg_badge[32];
@@ -1257,6 +1261,9 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
                                    : !strcmp(p, "ultra_performance") ? "UltraP (1080p)"
                                    : is_hh ? "Handheld 1080p" : "Docked 1620p";
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "Nodix SMRS [%s]", plabel);
+            } else if (!strcmp(up, "dlss")) {
+                g_perf_theme = 0;
+                vk_dlss_meter(g_perf_upscaler, (int)sizeof g_perf_upscaler);
             } else if (is_fsr) {
                 g_perf_theme = 1;
                 snprintf(g_perf_upscaler, sizeof g_perf_upscaler, "FSR 1.0 (EASU)");
@@ -1358,6 +1365,8 @@ static void perf_picture(const MenuTarget *t, const ImVec4 &c) {
         snprintf(v[3], sizeof v[3], "Nodix SMRS (%s, %s, %d%% Sharp)",
                  is_hh ? "Handheld 1080p" : "Docked 1620p",
                  p ? p : "Quality", s < 0 ? 0 : s > 100 ? 100 : s);
+    } else if (!strcmp(cfg_value("DKB_UPSCALER"), "dlss")) {
+        vk_dlss_meter(v[3], (int)sizeof v[3]);
     } else if (t->scaler == 2) {
         int s = cfg_int("DKB_SHARPNESS");
         snprintf(v[3], sizeof v[3], menu_text(UI_MENU_OV_FMT_FSR), s < 0 ? 0 : s > 100 ? 100 : s);

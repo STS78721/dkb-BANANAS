@@ -519,6 +519,18 @@ static _Thread_local ResolveHit rhit[RHIT_SLOTS];
 
 static ResolveHit *rhit_slot(uint64_t addr) { return &rhit[(addr >> 12 ^ addr >> 21) & (RHIT_SLOTS - 1)]; }
 
+// Pointer-like words that are not GPU addresses get probed again every draw. Only an absent index entry is cached:
+// a known pool whose import failed must keep its retry. Exact requests keep overlapping-pool selection and range
+// boundaries, and every index or page-table change drops these through pool_gen.
+typedef struct { uint64_t gen, addr, size; } ResolveMiss;
+#define RMISS_SLOTS 1024
+static _Thread_local ResolveMiss rmiss[RMISS_SLOTS];
+
+static ResolveMiss *rmiss_slot(uint64_t addr, uint64_t size) {
+    uint64_t h = (addr >> 2) ^ (addr >> 19) ^ (addr >> 37) ^ size * UINT64_C(0x9e3779b97f4a7c15);
+    return &rmiss[h & (RMISS_SLOTS - 1)];
+}
+
 static int resolve_check_on(void) {
     static int on = -1;
     if (on < 0) {
@@ -596,11 +608,16 @@ done:
     return ok;
 }
 
-int vk_mem_descriptor_key(uint64_t addr, uint64_t size, VkDescKey *out) {
-    memset(out, 0, sizeof *out);
-    if (!addr || !size || addr > UINT64_MAX - size) return 0;
+// The same texture and sampler slots are looked up for the whole replay. Exact queries stay per thread, misses
+// included, until a pool is initialized, finalized or remapped (pool_gen). Exact ranges keep pidx_find's choice for
+// overlapping pools and virtual-page boundaries. The stored key has no pool pointer.
+typedef struct { uint64_t gen, addr, size; VkDescKey key; int ok; } DescKeyHit;
+#define DESC_KEY_SLOTS 256
+static _Thread_local DescKeyHit desc_key_hits[DESC_KEY_SLOTS];
+
+// pool_lock held shared; the caller validated addr/size and zeroed out.
+static int descriptor_key_locked(uint64_t addr, uint64_t size, VkDescKey *out) {
     int ok = 0;
-    plat_mutex_lock_shared(&pool_lock);
     const pidx_ent *e = pidx_find(&pool_index, addr, size);
     const PoolRec *r = e ? e->buf : NULL;
     if (r && r->kind == POOL_IMPORT) {
@@ -623,6 +640,24 @@ int vk_mem_descriptor_key(uint64_t addr, uint64_t size, VkDescKey *out) {
             }
         }
     }
+    return ok;
+}
+
+int vk_mem_descriptor_key(uint64_t addr, uint64_t size, VkDescKey *out) {
+    memset(out, 0, sizeof *out);
+    if (!addr || !size || addr > UINT64_MAX - size) return 0;
+    uint64_t g = __atomic_load_n(&pool_gen, __ATOMIC_ACQUIRE);
+    uint64_t hash = (addr >> 5) ^ (addr >> 13) ^ (addr >> 21) ^ size * UINT64_C(0x9e3779b97f4a7c15);
+    DescKeyHit *h = &desc_key_hits[hash & (DESC_KEY_SLOTS - 1)];
+    if (h->gen == g && h->addr == addr && h->size == size) {
+        *out = h->key;
+        return h->ok;
+    }
+    plat_mutex_lock_shared(&pool_lock);
+    int ok = descriptor_key_locked(addr, size, out);
+    // The generation is read under the same lock as the index, so a remap between the fast check and this lookup
+    // cannot stamp its answer with the old generation. A failed lookup goes stale on the next mapping change too.
+    *h = (DescKeyHit){__atomic_load_n(&pool_gen, __ATOMIC_RELAXED), addr, size, *out, ok};
     plat_mutex_unlock_shared(&pool_lock);
     return ok;
 }
@@ -647,6 +682,15 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
         }
         return 1;
     }
+    const ResolveMiss *m = rmiss_slot(addr, size);
+    if (m->gen == g && m->addr == addr && m->size == size) {
+        if (resolve_check_on()) {
+            VkMemSpan s;
+            if (resolve_locked(addr, size, &s))
+                rt_fatal("vk: resolve miss cache of 0x%llx differs from the pool index", (unsigned long long)addr);
+        }
+        return 0;
+    }
     return resolve_locked(addr, size, out);
 }
 
@@ -657,6 +701,8 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
+    if (!e)
+        *rmiss_slot(addr, size) = (ResolveMiss){__atomic_load_n(&pool_gen, __ATOMIC_RELAXED), addr, size};
     if (r && r->kind == POOL_IMPORT && __atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE)) lazy_import(r);   // first GPU use
     if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);

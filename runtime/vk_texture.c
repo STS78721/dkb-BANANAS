@@ -636,6 +636,52 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
                (unsigned long long)n_texels, (unsigned long long)n_diff_tex);
 }
 
+// A large whole-texture upload whose storage is entirely zero (a cleared shadow map at a scene change) is cleared
+// on the GPU instead of unswizzled on the CPU. The image ends as zeros either way. TOTK_ZERO_UPLOAD=0 turns it off.
+static int upload_all_zero(Tex *e) {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *v = cfg_get("TOTK_ZERO_UPLOAD");
+        enabled = !(v && !strcmp(v, "0"));
+    }
+    const tex_t *t = &e->t;
+    const nvn_texdesc *d = &t->d;
+    if (!enabled || !t->mem || nvn_gpu_only((uintptr_t)t->mem) || t->L.size < (32ull << 20)) return 0;
+    if (!e->pub.image || e->f.astc_bw || e->f.expand_rgb || format_compressed(e->f.vk) ||
+        d->target == NVN_TEXTURE_TARGET_3D || (d->format >= 0x41 && d->format <= 0x50))
+        return 0;
+    uint64_t t0 = kern_now_ns();
+    const uint8_t *p = t->mem;
+    uint64_t total = t->L.size;
+    for (uint64_t at = 0; at < total; at += 65536) {
+        uint64_t end = at + 65536 < total ? at + 65536 : total;
+        uint64_t acc = 0, k = at;
+        for (; k + 8 <= end; k += 8) {
+            uint64_t w;
+            memcpy(&w, p + k, 8);
+            acc |= w;
+        }
+        for (; k < end; k++) acc |= p[k];
+        if (acc) return 0;
+    }
+    VkCommandBuffer cb = vk_upload_begin();
+    barrier(cb, ALL_RW, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkImageSubresourceRange rg = {e->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+    if (e->pub.aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) {
+        VkClearDepthStencilValue zero = {0.0f, 0};
+        vkCmdClearDepthStencilImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    } else {
+        VkClearColorValue zero = {{0}};
+        vkCmdClearColorImage(cb, e->pub.image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &rg);
+    }
+    barrier(cb, VK_PIPELINE_STAGE_2_CLEAR_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, ALL_RW);
+    vk_upload_end();
+    static volatile int32_t n_zero_logged;
+    log_limited(&n_zero_logged, "upload: %ux%u fmt %#x (%llu MiB) is all zero: cleared on GPU (checked in %.2f ms)",
+                d->width, d->height, d->format, (unsigned long long)(total >> 20), (kern_now_ns() - t0) / 1e6);
+    return 1;
+}
+
 // Copies the whole storage into the image (every level and layer the image has).
 static void upload(Tex *e) {
     static volatile int32_t n_bad, n_undecoded;
@@ -644,6 +690,20 @@ static void upload(Tex *e) {
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
     if (!bpb || !t->mem) return;
     uint64_t p0 = perf_begin(), u0 = kern_now_ns();
+    if (upload_all_zero(e)) {
+        uint64_t dt = kern_now_ns() - u0;
+        if (e->uploaded) {
+            n_reuploads++, perf_count(PERF_CNT_TEX_REUP);
+            ru_n++, ru_bytes += t->L.size, ru_ns += dt;
+        } else {
+            n_uploads++, perf_count(PERF_CNT_TEX_UP);
+        }
+        e->wt_n = 0;
+        e->uploaded = 1;
+        e->n_up++;
+        perf_end(PERF_TEX, p0);
+        return;
+    }
     int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D, one_d = e->pub.type == VK_IMAGE_TYPE_1D;
     uint32_t levels = linear ? 1 : e->pub.levels, layers = linear ? 1 : e->pub.layers;
     int astc = e->f.astc_bw != 0, rgb = e->f.expand_rgb;

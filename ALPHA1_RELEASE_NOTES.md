@@ -1,51 +1,68 @@
-## 🍌 Alpha 1f: Native Nodix Super Motion SMRS, Dynamic Handheld/Docked Scaling & Optical Flow Fixes ⚡
+# Donkey Kong Bananza Alpha 1g
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/STS78721/dkb-BANANAS/bananza/launcher/launcher_showcase.png" alt="SteelTemple DKB Standalone Launcher" width="90%">
-</p>
+**Release date:** 2026-11-13  
+**Type:** Native render resolution, NVIDIA DLSS Super Resolution, menu and hit-effect fixes, replay optimizations, and safe defaults (drop-in over Alpha 1f / 1d / 1c / 1b / 1)
 
-Welcome to **Alpha 1f**, a landmark community release of the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)**!
-
-In this release, we take a massive evolutionary step forward: fully integrating the **Nodix Super Motion SMRS (Spatial Motion Resolution Super-resolution) and Frame Generation (SMFG)** stack **natively directly into the game engine and in-game menu (`dkb.exe` & `DKBLauncher.exe`)**. This eliminates all reliance on external helper apps (`Mfg Super Motion.exe`), avoids window focus/capture hooks, and delivers a clean, unified PC experience.
+This release draws the picture at the resolution you choose, adds NVIDIA DLSS Super Resolution that reports the preset it is actually running, brings back the missing hit-effect textures, and stops the F1 menu from aborting. Fresh installs get a vendor-neutral 1920×1080 windowed profile. An update does not replace the settings already on your PC.
 
 ---
 
-### 🔥 What's New in Alpha 1f & Why We Went This Way
+## Highlights
 
-#### 1. 🚀 Native In-Engine Nodix Super Motion (Zero External Processes)
-* **The Problem:** Previously, running Super Motion required launching external background utilities (`Mfg Super Motion.exe` / injector wrappers). This introduced window focus conflicts, alt-tab capture drops, borderless fullscreen hooking issues, and confusing multiple tray icons.
-* **The Solution:** We ported Nodix Super Motion SMRS and Frame Generation directly into the native engine runtime (`gfx_present.c`, `vk_fsr.c`, `menu.cpp`). All upscaling and frame interpolation pipelines run synchronously inside the Vulkan 1.3 presentation queue. **Zero external apps are needed or launched.**
-
-#### 2. 🎮 SMRS Handheld / Docked Dynamic Workload Workaround
-* **The Technical Challenge:** Donkey Kong Bananza v1.0.0 Switch 2 retail code hardcodes its internal virtual display render target to **2880×1620 (Docked)**. Unlike TotK Recomp, Bananza 1.0.0 currently lacks decompiled assembly patch sets for dynamic 3D scene/output resolution scaling (`resolution: the generated C has no output and scene patch sets; the game keeps its own resolution`). As a result, setting a lower resolution or render scale previously felt like it did nothing, and standard spatial upscalers aborted (`return 0`) whenever the output resolution was $\le$ 1620p (such as 1080p or 1440p).
-* **The Alpha 1f Solution:** The retail game binary contains one native, hardware-level switch that alters internal 3D render dimensions: **Console Operation Mode (`nn::oe::GetOperationMode()`)**. We hooked SMRS quality presets directly to this mechanism:
-  * **Balanced & Performance Presets (`Handheld 1080p`):** Dynamically switches operation mode to Handheld (`TOTK_OPERATION_MODE = "handheld"`). Bananza instantly scales its internal render target from **2880×1620 (4.66 MP)** down to **1920×1080 (2.07 MP)**—an authentic **55.6% reduction in GPU pixel workload**! On GPU-bound systems and handhelds (Steam Deck, ROG Ally, RTX 3050/4060 laptops), this yields an immediate **35% to 50% base FPS boost**.
-  * **Quality & Native / DLAA Presets (`Docked 1620p`):** Dynamically switches operation mode to Docked (`TOTK_OPERATION_MODE = "docked"`), running full-fat 2880×1620 internal resolution with pristine edge reconstruction.
-  * **1:1 Scale Sharpening:** Relaxed the FSR/RCAS bypass logic so that high-fidelity edge sharpening is applied even when running at 1080p 1:1 scale without blur.
-
-#### 3. 🎛️ Clean UI & Dedicated Optical Flow Sliders
-* **Fixed Duplicate "FSR Sharpness" Slider:** Previously, the frame generation motion vector flow control accidentally reused the "FSR sharpness" string ID in the in-game menu.
-* **Dedicated Controls:** Added distinct text IDs and localized controls in both English and Russian:
-  * **Super Motion sharpness (`UI_MENU_SMRS_SHARPNESS`):** Adjusts SMRS Robust Contrast-Adaptive Sharpening (RCAS).
-  * **Optical flow sensitivity (`UI_MENU_FG_FLOW`):** Fine-tunes motion vector optical flow thresholds for artifact-free Super Motion Frame Generation.
-
-#### 4. 🔬 Technical Investigation: Unlocking the Hardcoded 1620p Lock
-* Upstream testing (`Lucas-blip-png/dkb-pc-recomp`) documented that attempting to force 4K (3840×2160) or ultrawide buffers causes out-of-bounds crashes during gameplay load due to internal render resource heap constraints.
-* While `dkbwide` (`al::getVirtualDisplayWidth`/`Height` at `main+0x5ad9f0`/`5ada00`) successfully adjusts camera aspect ratio for 21:9 and 32:9 displays, the underlying 3D render buffer remains clamped to 1620p.
-* **Ongoing Research:** We are actively investigating Bananza's `agl` dynamic texture heap allocations and drafting native assembly patch sets for `recomp/patches-dkb100.txt`. This will allow arbitrary dynamic framebuffer scaling (from 720p native up to true 4K/8K) in a future update!
+- **Native render resolution** — the picture and HUD follow **Game Render Resolution**. 1920×1080, 2560×1440, and 3840×2160 are real render sizes, not a 2880×1620 image scaled up afterwards. A new install stays at **1920×1080 windowed**
+- **NVIDIA DLSS Super Resolution** — DLSS follows the size the game is already drawing. **100% DLAA** uses preset **K**, **Quality** and **Balanced** use preset **K**, **Performance** uses preset **M**, and **Ultra Performance** uses preset **L**. The in-game FPS line shows that live mode, for example `DLSS Quality K 67%`
+- **Motion for DLSS** — motion vectors are dilated camera reprojection, then matched against the previous frame where something moves on its own. This is super resolution, not frame generation
+- **F1 menu and hit effects** — opening the in-game menu no longer aborts, and the textures shown when Donkey Kong hits something are drawn again
+- **Same picture, less replay work** — repeated descriptor and address lookups are cached, a draw rebinds only the vertex streams that changed, command buffers are walked again only when they wait or read a deferred bind, and an all-zero texture upload is cleared on the GPU
 
 ---
 
-### 🛡️ 100% Core Features Preserved
-* **AMD RX 9000 Stability:** Retained 1 MiB zero dummy buffer & full range SSBO binding (`ZERO_BYTES 1048576u`) in `vk_exec_draw.c` to prevent hardware page faults at `0x1000`.
-* **TDR Driver Protection:** Retained 1500ms fence wait (`ONESHOT_WAIT_MS 1500u`) preventing Windows 2s TDR driver resets on long shader compilations.
-* **Sony DualSense Support:** Native adaptive triggers, haptic feedback, and audio haptics.
-* **HUD & Overlay:** `F1` / `Select+Start` in-game menu and `F10` / `L3+R3` Real-Time Performance HUD with accurate frame generation multipliers.
+## Changed
+
+### Picture size
+- **Render size (`dkb_wide`):** the virtual display and its render-target pool follow `output_res` for 16:9 sizes from 1280×720 through 7680×4320. The shipped default is 1920×1080
+- **HUD:** the HUD is drawn in that same size. Choosing a higher resolution does not shrink it
+
+### Upscaling and the FPS meter
+- **DLSS Super Resolution (`vk_dlss.c`):** evaluation uses the game's color and the current render size. Presets are **K / K / K / M / L** across DLAA, Quality, Balanced, Performance, and Ultra Performance. `nvngx_dlss.dll` beside the game is the NGX runtime. Streamline is not loaded
+- **Live preset (`vk_dlss_meter`):** the FPS overlay and the full performance panel name the mode from the last successful evaluation, including the actual percentage when dynamic resolution moves between the named steps
+- **Motion vectors (`dlss_mv.comp`):** dilated camera reprojection, with a bounded luma match to the previous frame. The history stores luma only. The accept test is unchanged
+
+### Stability
+- **In-game menu:** a cleared guest system event is rebuilt instead of aborting when the menu opens
+- **Hit effects:** the hit-effect draws that were being skipped are drawn again
+
+### Replay cost, without changing the image
+- **Descriptor and address caches:** exact descriptor keys and failed address lookups stay cached until a pool mapping changes
+- **Vertex binds:** one changed stream is rebound on its own
+- **Command buffers:** a recording is marked when it finishes, and a later submit skips the wait and deferred-bind walks when those records are absent
+- **Zero uploads:** a texture of 32 MiB or more whose storage is entirely zero is cleared on the GPU
+
+### Safe out-of-the-box defaults
+- A new install, and **Restore Defaults** in the launcher, uses **1920×1080 windowed**, **Upscaling = Off**, **Frame generation = Off**, **Reflex = Off**, **field of view 100**, and the **default color profile**
+- Updating keeps the `dkb.ini` already on that PC. New keys are added only when that PC does not already have them
+- No pipeline cache is included. Each GPU builds its own on first launch
+- No display, color, controller, or volume settings from a development PC are included
 
 ---
 
-### 📥 Downloads & Installation
+## Install
 
-- **`SteelTemple-DKB-Alpha1f-Update.zip`** (`~95 MB`): Lightweight 1-click drop-in update package. Extract and overwrite directly into your existing game directory (`C:\Games\DKB PC`), or update via launcher.
-- **`SteelTemple-DKB-Alpha1f-Portable-StandAlone.zip`** (`~422 MB`): Full standalone zero-install PC package. Extract to `C:\Games\DKB PC` (or any directory), copy your legally dumped `exefs/` and `romfs/` files, and launch `DKBLauncher.exe`!
-- **`SteelTemple-DKB-Alpha1f-Full-Setup-Wizard.exe`** / **`DKB-Setup.zip`**: All-in-one graphical installer with `.nup` container unpacking, loose RomFS indexing, desktop shortcut creation, and controller prompt selection.
+| Asset | Use when |
+|---|---|
+| **`SteelTemple-DKB-Alpha1g-Update.zip`** | You already have Alpha 1f / 1d / 1c / 1b / 1. Open **DKBLauncher** and take the update, or extract the zip over the game folder |
+| `SteelTemple-DKB-Alpha1g-Portable-StandAlone.zip` | Fresh install. Extract it, then copy in your own `exefs` and `romfs` |
+
+1. Close the game before updating.
+2. Update from **DKBLauncher**, or extract `SteelTemple-DKB-Alpha1g-Update.zip` over the game folder. Your `dkb.ini`, saves, and dump stay as they are.
+3. Launch the game. The first run on a new GPU prepares shaders once. The launcher title shows **Alpha 1g**.
+
+Your dump (`exefs` and `romfs`), saves, and personal `dkb.ini` stay on your PC. A PC that does not already have a `dkb.ini` receives the 1920×1080 windowed profile above.
+
+DLSS appears in the launcher and in the in-game menu. Leave it off on a GPU that does not support it.
+
+---
+
+## Credits
+
+SteelTempSaint community and testers · Lucas and the DKB Recomp contributors · TotK Recomp · NVIDIA NGX for DLSS Super Resolution · everyone testing resolution, the menu, hit effects, and other GPUs

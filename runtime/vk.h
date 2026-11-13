@@ -369,6 +369,23 @@ typedef struct {
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
 } VkTexImage;
+
+// DLSS Super Resolution in place of the game's upscaler (vk_dlss.c, upscaler = dlss). NVIDIA, Windows.
+// 100% is DLAA preset K, 67% Quality preset K, 58% Balanced preset K, 50% Performance preset M,
+// 33% Ultra Performance preset L. The mode follows the game's own upscaler ratio.
+typedef struct VkExec VkExec;
+int vk_dlss_wanted(void);
+int vk_dlss_instance_exts(const char **out, int max);
+int vk_dlss_device_exts(const char **out, int max);
+int vk_dlss_record(VkCommandBuffer cb, uint64_t fence, const VkTexImage *in, const VkTexImage *out);
+void vk_dlss_release(void);
+void vk_dlss_jitter(VkImage depth, float j[2]);
+void vk_dlss_scene_draw(const VkExec *ex);
+void vk_dlss_part_begin(int k);
+void vk_dlss_part_taken(int k);
+void vk_dlss_image_gone(VkImage image);
+void vk_dlss_meter(char *b, int n);   // the live mode, "DLSS Quality K 67%"; "DLSS" before the first evaluation
+
 const VkTexImage *vk_texture_get(const tex_t *t);   // created and made current; NULL for BUFFER or unmapped formats
 // A texture slot; a slot whose texture was finalized follows the live texture at the same storage (hle_nvn.c).
 const VkTexImage *vk_texture_by_id(const dpool_ref *pool, int id, view_t *view, int *has_view);

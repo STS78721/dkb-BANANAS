@@ -276,6 +276,11 @@ static int first_above(uint64_t a) {
     return lo;
 }
 
+const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
+    VkDescriptorBufferInfo b;
+    return vk_usnap_find(addr, n, 1, &b) ? U.arena->map + b.offset : NULL;
+}
+
 int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
     if (!U.on || !n) return 0;
     int i = first_above(addr);

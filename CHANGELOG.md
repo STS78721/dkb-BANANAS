@@ -4,6 +4,18 @@ All notable changes to the **SteelTempSaint Donkey Kong Bananza PC Recomp (DKB)*
 
 ---
 
+## [Alpha 1g] - 2026-11-13
+
+### Native resolution, DLSS Super Resolution, and safe defaults
+- The picture and HUD follow Game Render Resolution. 1920×1080, 2560×1440, and 3840×2160 are real render sizes. A new install stays at 1920×1080 windowed.
+- NVIDIA DLSS Super Resolution follows the size the game is already drawing. DLAA, Quality, and Balanced use preset K. Performance uses M. Ultra Performance uses L. The FPS line shows the live mode.
+- Motion vectors are dilated camera reprojection, matched to the previous frame where something moves on its own.
+- Opening the in-game menu no longer aborts, and hit-effect textures are drawn again.
+- Replay lookups, vertex rebinds, command-buffer walks, and all-zero texture uploads do less work. The picture is unchanged.
+- A new install, and Restore Defaults, uses upscaling off, frame generation off, Reflex off, and the default color profile. An update keeps the `dkb.ini` already on that PC. No pipeline cache is shipped.
+
+---
+
 ## [Alpha 1f] - 2026-11-08
 
 ### 🍌 Native Nodix Super Motion, Handheld/Docked Scaling & Optical Flow Fixes (Alpha 1f)

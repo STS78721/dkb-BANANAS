@@ -1,0 +1,101 @@
+#version 450
+// Motion vectors for DLSS (runtime/vk_dlss.c). The game's upscaler reads a colour image and writes a colour image, so
+// it has no velocity to borrow. This pass builds the vectors DLSS wants, in input pixels, previous minus current:
+//   1. Camera reprojection of the scene depth through m (last frame's view-projection times the inverse of this
+//      frame's). A 3x3 closest-depth pick copies the foreground's vector onto the edge, which is the dilation DLSS
+//      expects so a silhouette does not keep the background's motion.
+//   2. Where that prediction does not explain the colour (a character, a particle), a search of the previous frame's
+//      colour, ±16 pixels, replaces the vector when the match is clearly better. The world keeps the camera vector.
+// The game's projection is OpenGL-style (clip z from -w to w, depth = z/w * 0.5 + 0.5) and the host flips y, so pixel
+// row 0 is the top of clip space. Both ends of the camera vector are unjittered. The previous frame's colour was
+// drawn with pj, so the search samples there.
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2D ztex;
+layout(binding = 1) uniform sampler2D prev_color;
+layout(binding = 2) uniform sampler2D curr_color;
+layout(binding = 3, rg16f) uniform writeonly image2D mv;
+layout(binding = 4, r16f) uniform writeonly image2D hist;   // previous luma only: the match compares luma
+layout(push_constant) uniform P {
+    mat4 m;
+    vec4 dim;    // width, height, jitter x, jitter y of this frame (pixels)
+    vec4 ctrl;   // use camera, refine with the previous colour, write this frame's colour, match threshold
+    vec4 pj;     // jitter x, jitter y the previous colour was drawn with
+} pc;
+
+vec2 reproj(ivec2 q, float d) {
+    vec2 cur = vec2(q) + 0.5 - pc.dim.zw;
+    vec4 ndc = vec4(cur.x / pc.dim.x * 2.0 - 1.0, 1.0 - cur.y / pc.dim.y * 2.0, d * 2.0 - 1.0, 1.0);
+    vec4 prev = pc.m * ndc;
+    if (prev.w <= 1e-6) return vec2(0.0);
+    vec2 n = prev.xy / prev.w;
+    return vec2((n.x + 1.0) * 0.5 * pc.dim.x, (1.0 - n.y) * 0.5 * pc.dim.y) - cur;
+}
+
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+float match_at(vec2 hist_px, float cur_l) {
+    float l = textureLod(prev_color, hist_px / pc.dim.xy, 0.0).r;
+    return abs(cur_l - l) / max(max(cur_l, l), 0.05);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(p, ivec2(pc.dim.xy)))) return;
+    vec3 cur_rgb = texelFetch(curr_color, p, 0).rgb;
+    float cur_l = luma(cur_rgb);
+    if (pc.ctrl.z > 0.5) imageStore(hist, p, vec4(cur_l, 0.0, 0.0, 0.0));
+
+    vec2 v = vec2(0.0);
+    if (pc.ctrl.x > 0.5) {
+        float bd = texelFetch(ztex, p, 0).r;
+        ivec2 best = p;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                ivec2 q = clamp(p + ivec2(dx, dy), ivec2(0), ivec2(pc.dim.xy) - 1);
+                float d = texelFetch(ztex, q, 0).r;
+                if (d < bd) { bd = d; best = q; }
+            }
+        }
+        v = reproj(best, bd);
+        if (pc.ctrl.y > 0.5) {
+            vec2 cur_u = vec2(p) + 0.5 - pc.dim.zw;
+            float err0 = match_at(cur_u + v + pc.pj.xy, cur_l);
+            if (err0 > pc.ctrl.w) {
+                float best_e = err0;
+                vec2 best_off = vec2(0.0);
+                vec2 base = cur_u + v + pc.pj.xy;
+                for (int dy = -16; dy <= 16; dy += 4) {
+                    for (int dx = -16; dx <= 16; dx += 4) {
+                        if (dx == 0 && dy == 0) continue;   // err0 is this sample
+                        vec2 off = vec2(dx, dy);
+                        float e = match_at(base + off, cur_l);
+                        if (e < best_e) { best_e = e; best_off = off; }
+                    }
+                }
+                // An exact luma match cannot be improved by the finer steps.
+                if (best_e == 0.0) {
+                    if (best_e < err0 * 0.55 && best_e + 0.04 < err0) v += best_off;
+                    imageStore(mv, p, vec4(v, 0.0, 0.0));
+                    return;
+                }
+                for (int dy = -2; dy <= 2; dy += 2) {
+                    for (int dx = -2; dx <= 2; dx += 2) {
+                        vec2 off = best_off + vec2(dx, dy);
+                        float e = match_at(base + off, cur_l);
+                        if (e < best_e) { best_e = e; best_off = off; }
+                    }
+                }
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        vec2 off = best_off + vec2(dx, dy);
+                        float e = match_at(base + off, cur_l);
+                        if (e < best_e) { best_e = e; best_off = off; }
+                    }
+                }
+                // Keep the camera vector unless the colour match is clearly the same surface.
+                if (best_e < err0 * 0.55 && best_e + 0.04 < err0) v += best_off;
+            }
+        }
+    }
+    imageStore(mv, p, vec4(v, 0.0, 0.0));
+}

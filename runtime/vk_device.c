@@ -57,7 +57,7 @@ static void mesa_cache_beside_exe(void) {
 
 static int create_instance(void) {
     mesa_cache_beside_exe();
-    const char *ext[24];
+    const char *ext[32];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 16);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
     int validate = cfg_bool("TOTK_VK_VALIDATION");
@@ -79,6 +79,27 @@ static int create_instance(void) {
         } else utils = 0;
     }
     if (utils) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    if (vk_dlss_wanted()) {
+        const char *dx[8];
+        int nd = vk_dlss_instance_exts(dx, 8);
+        for (int i = 0; i < nd && n_ext < 32; i++) {
+            int seen = 0;
+            for (uint32_t k = 0; k < n_ext; k++)
+                if (!strcmp(ext[k], dx[i])) seen = 1;
+            if (!seen) {
+                uint32_t ni = 0;
+                vkEnumerateInstanceExtensionProperties(NULL, &ni, NULL);
+                VkExtensionProperties *ip = calloc(ni ? ni : 1, sizeof *ip);
+                int has = 0;
+                if (ip) {
+                    vkEnumerateInstanceExtensionProperties(NULL, &ni, ip);
+                    has = has_ext(ip, ni, dx[i]);
+                    free(ip);
+                }
+                if (has) ext[n_ext++] = dx[i];
+            }
+        }
+    }
     g_vk.debug_utils = utils;
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "TotK Recomp",
                              .pEngineName = "TotK Recomp", .apiVersion = VK_API_VERSION_1_3};
@@ -326,11 +347,24 @@ static int create_device(void) {
         gpl_link = tail;
         CHAIN(gpl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
     }
-    free(ep);
-
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
+    // Queried before the DLSS extensions so bufferDeviceAddress is known: NGX's buffer-device-address extension is
+    // left off when Vulkan 1.2 already provides the feature.
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
+    if (vk_dlss_wanted() && g_vk.props.vendorID == 0x10de) {
+        const char *dx[16];
+        int nd = vk_dlss_device_exts(dx, 16);
+        for (int i = 0; i < nd && n_ext < 48; i++) {
+            int seen = 0;
+            for (uint32_t k = 0; k < n_ext; k++)
+                if (!strcmp(ext[k], dx[i])) seen = 1;
+            if (!seen && has_ext(ep, ne, dx[i]) &&
+                !(c->f12.bufferDeviceAddress && !strcmp(dx[i], VK_EXT_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)))
+                ext[n_ext++] = dx[i];
+        }
+    }
+    free(ep);
     vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
     c->f2.features.robustBufferAccess = VK_TRUE;
@@ -426,6 +460,7 @@ static void destroy_all(void) {
     gfx_window_release_vk();
     if (g_vk.device) vkDeviceWaitIdle(g_vk.device);
     if (g_vk.device) vk_clear_shutdown(g_vk.device);
+    if (g_vk.device) vk_dlss_release();
     if (g_vk.device) vk_astc_release();
     if (g_vk.device) vk_crumbs_release();
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);

@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageDraw, ImageTk
 
-CURRENT_VERSION = "Alpha 1f"
+CURRENT_VERSION = "Alpha 1g"
 APP_TITLE = f"Donkey Kong Bananza PC Recomp · {CURRENT_VERSION}"
 VERSION_STRING = f"{CURRENT_VERSION} · DKB"
 GITHUB_URL = "https://github.com/STS78721/dkb-BANANAS"
@@ -666,7 +666,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_toggle(f,"Exclusive Fullscreen","fullscreen","0","Start in exclusive fullscreen mode.")
         resolutions=["3840x2160","2560x1440","1920x1080","1600x900","1280x800","1280x720","3440x1440","5120x1440"]
         if self.display_resolution not in resolutions:resolutions.insert(0,self.display_resolution)
-        self.create_row_dropdown(f,"Window Resolution","window_size",resolutions,self.get_val("window_size",self.display_resolution),"Window size in pixels. Game render resolution is configured separately by the runtime.")
+        self.create_row_dropdown(f,"Window Resolution","window_size",resolutions,self.get_val("window_size","1920x1080"),"Window size in pixels. A new install uses 1920×1080. Game render resolution is configured separately.")
         rates=["30","60"]
         cur_fps=self.get_val("fps_limit","60")
         self.create_row_dropdown(f,"Frame Rate Limit","fps_limit",rates,"30" if cur_fps=="30" else "60","Target frame rate: 60 FPS (Native Bananza speed) or 30 FPS (Battery Saver / Handheld).")
@@ -674,7 +674,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_dropdown(f,"Performance Metrics Overlay","perf_overlay",["off","fps","full"],self.get_val("perf_overlay","off"),"Display in-game real-time FPS and frametime metrics overlay.")
         output_sizes=["1280x720","1600x900","1920x1080","2560x1440","3200x1800","3840x2160","2560x1080","3440x1440","3840x1600","5120x2160","3840x1080","5120x1440","1280x800","1680x1050","1920x1200","2560x1600"]
         if self.display_resolution not in output_sizes:output_sizes.insert(0,self.display_resolution)
-        self.create_row_dropdown(f,"Game Render Resolution","output_res",output_sizes,self.get_val("output_res",self.display_resolution),"Render the picture and HUD at this size. Requires matching layout support in the game build for non-standard aspect ratios.")
+        self.create_row_dropdown(f,"Game Render Resolution","output_res",output_sizes,self.get_val("output_res","1920x1080"),"Draw the picture and HUD at this size. A new install uses 1920×1080. Higher sizes need a GPU that can hold them.")
         self.create_row_dropdown(f,"Aspect Ratio Behavior","aspect",["fit","stretch"],"fit","Fit preserves the image; Stretch fills the full display.")
         self.create_row_slider(f,"Field of View","fov",70,140,100,"%","Widen or narrow the camera view where supported by the DKB build. Requires the FOV patch in the selected game build.")
         wide=tk.Frame(f,bg=COLOR_CARD,padx=13,pady=9,highlightthickness=1,highlightbackground=COLOR_CARD_BORDER); wide.pack(fill=tk.X,padx=20,pady=8)
@@ -699,18 +699,18 @@ class DKBSettingsDialog(tk.Toplevel):
         messagebox.showinfo("Display Profile","Applied DKB's fit aspect mode and a wider camera view. This setting does not rewrite RomFS or HUD files.",parent=self)
     def build_upscale_tab(self):
         f=self.tab_upscale
-        self.create_row_dropdown(f,"Super Resolution Technology","upscaler",["smrs","fsr","bilinear","off"],"smrs","Upscaler: Nodix Super Motion SMRS (Recommended), AMD FSR 1.0 (Native), Bilinear, or Off.")
-        self.create_row_dropdown(f,"SMRS / Upscaler Preset","upscaler_preset",["native","ultra_quality","quality","balanced","performance","ultra_performance"],"quality","Preset: Native / DLAA (Docked 1620p), Ultra Quality (75%), Quality (Docked 1620p), Balanced (Handheld 1080p), Performance (Handheld 1080p), Ultra Performance (33%).")
-        self.create_row_dropdown(f,"Frame Generation Mode","fg_mode",["msm_fg","dlss_fg","fsr3_fg","xefg","off"],"msm_fg","Frame Generation: Nodix Super Motion (SMFG 1.3), DLSS MFG (RTX), AMD FSR 3.1 FG, XeSS MFG, or Off.")
+        self.create_row_dropdown(f,"Super Resolution Technology","upscaler",["off","dlss","smrs","fsr","bilinear"],"off","Off draws the game picture as rendered. DLSS is NVIDIA Super Resolution and follows that size: DLAA, Quality, and Balanced use preset K, Performance uses M, Ultra Performance uses L. SMRS and FSR run on other GPUs. A new install leaves this off.")
+        self.create_row_dropdown(f,"SMRS / Upscaler Preset","upscaler_preset",["native","ultra_quality","quality","balanced","performance","ultra_performance"],"quality","SMRS preset. DLSS ignores this row and uses the live render size instead. The in-game FPS line shows the DLSS mode that was actually used.")
+        self.create_row_dropdown(f,"Frame Generation Mode","fg_mode",["off","msm_fg","dlss_fg","fsr3_fg","xefg"],"off","Frame generation. A new install leaves this off.")
         self.create_row_dropdown(f,"Frame Multiplier","fg_mult",["2x","3x","4x","6x"],"2x","Multiplier: 2x (Double FPS), 3x (Triple FPS), 4x (Quadruple FPS), 6x.")
         self.create_row_dropdown(f,"Multiplier Pacing","fg_type",["fixed","adaptive"],"fixed","Pacing: Fixed Multiplier or Adaptive Frame Pacing.")
-        self.create_row_dropdown(f,"Render Scale (Internal)","render_scale",["game","33","50","58","67","75","100","125","150","200"],"67","Internal resolution scale: lower scales boost base FPS for Frame Generation.")
+        self.create_row_dropdown(f,"Render Scale (Internal)","render_scale",["game","33","50","58","67","75","100","125","150","200"],"game","Scale used by SMRS. DLSS follows the game's own rendered size. A new install leaves this on game.")
         self.create_row_slider(f,"Super Motion Sharpness","sharpness",0,100,80,"%","Nodix SMRS spatial reconstruction and edge enhancement filter.")
-        self.create_row_dropdown(f,"Low-Latency Mode","reflex",["boost","on","off"],"boost","NVIDIA Reflex / Low Latency Boost reduces input latency.")
+        self.create_row_dropdown(f,"Low-Latency Mode","reflex",["off","on","boost"],"off","NVIDIA Reflex. A new install leaves this off so other GPUs are not asked for it.")
         self.create_row_dropdown(f,"Device Profile","device_profile",["auto","desktop","deck"],"auto","Runtime profile for thread priority and system hints.")
         self.create_row_dropdown(f,"Shader Pipeline Policy","pipe_wait",["default","draw"],"default","Default waits only when needed; Draw prioritizes avoiding pipeline stalls.")
         self.create_row_toggle(f,"Prebuild Vulkan Pipelines","pipe_prebuild","1","Build reusable Vulkan pipelines before play when supported.")
-        self._section_note(f,"Nodix Super Motion SMRS Upscaler and Multi-Frame Generation are fully integrated directly into Donkey Kong Bananza.")
+        self._section_note(f,"A new install is 1920×1080 windowed, with upscaling, frame generation, and Reflex off. Turn a scaler on here if this PC should use one.")
 
         def on_preset_changed(_e=None):
             p = self.vars["upscaler_preset"].get()
@@ -750,7 +750,7 @@ class DKBSettingsDialog(tk.Toplevel):
         self.create_row_toggle(f,"High-FPS Realtime Physics","realtime","1","Unlocks game physics calculation tickrate for smooth 60+ FPS without slow motion.")
         self.create_row_toggle(f,"Realtime Cloth & Fur Physics","cloth_realtime","1","Evaluates Donkey Kong fur and cloth physics in real time at high refresh rates.")
         self.create_row_toggle(f,"High-FPS Camera Smoothing Fix","highfps_fix","1","Fixes camera tracking jitter and maintains smooth animation pacing.")
-        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked renders internally at 2880x1620 for full fidelity; Handheld renders at 1920x1080 (56% lighter GPU workload) - pair with Super Motion SMRS for massive FPS gains!")
+        self.create_row_dropdown(f,"Console Emulation Profile","operation_mode",["docked","handheld"],self.get_val("operation_mode","docked"),"Docked or handheld game mode. Picture size is Game Render Resolution.")
         self.create_row_toggle(f,"Native Vulkan Geometry Shaders","native_gs","1","Directly compiles native geometry shaders on supported Vulkan GPUs.")
         self.create_row_toggle(f,"Experimental Geometry","experimental_geometry","0","Experimental DKB geometry path; leave off if destructible terrain renders incorrectly.")
         self.create_row_toggle(f,"Skip Known NVIDIA Movie Fault","fix_vs_fault","1","Avoids a known NVIDIA GPU fault after the first guide movie.")
@@ -818,8 +818,8 @@ class DKBSettingsDialog(tk.Toplevel):
         except Exception as exc:messagebox.showerror("Settings","Could not save the DKB settings:\n"+str(exc),parent=self)
     def restore_defaults(self):
         if not messagebox.askyesno("Restore Defaults","Reset this page to the DKB launcher defaults?",parent=self):return
-        defaults={"fullscreen":"0","window_size":self.display_resolution,"output_res":self.display_resolution,"fps_limit":"60","vk_present":"mailbox","aspect":"fit","fov":"100",
-            "upscaler":"smrs","upscaler_preset":"quality","fg_mode":"msm_fg","fg_mult":"2x","fg_type":"fixed","render_scale":"67","sharpness":"80","device_profile":"auto","pipe_wait":"default","pipe_prebuild":"1",
+        defaults={"fullscreen":"0","window_size":"1920x1080","output_res":"1920x1080","fps_limit":"60","vk_present":"mailbox","aspect":"fit","fov":"100","perf_overlay":"off",
+            "upscaler":"off","upscaler_preset":"quality","fg_mode":"off","fg_mult":"2x","fg_type":"fixed","render_scale":"game","sharpness":"80","reflex":"off","device_profile":"auto","pipe_wait":"default","pipe_prebuild":"1",
             "color_preset":"default","color_brightness":"0","color_contrast":"100","color_saturation":"100","color_gamma":"1.0",
             "fxaa":"1",
             "experimental_geometry":"0","fix_vs_fault":"1","fix_zero":"1","lod_guard":"1","fix_indirect_reset":"1","lib_prebuild":"1",

@@ -684,6 +684,7 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
 }
 
 void vk_exec_image_gone(VkImage image) {
+    vk_dlss_image_gone(image);
     vk_exec_bc_gone(image);
     if (!views_by_image.klen) return;
     for (ViewNode *n = nvn_hm_del(&views_by_image, &image), *next; n; n = next) {
@@ -2176,12 +2177,18 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
 
 static void record_fixed(VkExec *ex) {
     VkCommandBuffer cb = ex->cb;
+    float j[2] = {0, 0};
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_jitter(ex->depth.image, j);
+    static float pj[2];
+    if (j[0] != pj[0] || j[1] != pj[1]) ex->dirty |= VK_EXEC_DIRTY_VIEWPORT;
     if (ex->dirty & VK_EXEC_DIRTY_VIEWPORT) {
         float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
         if (ex->has_vp) x = ex->vp[0][0], y = ex->vp[0][1], w = ex->vp[0][2], h = ex->vp[0][3];
         if (w < 1) w = 1;
         if (h < 1) h = 1;
         VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+        if (j[0] != 0 || j[1] != 0) v.x += j[0], v.y += j[1];
+        pj[0] = j[0], pj[1] = j[1];
         vkCmdSetViewportWithCount(cb, 1, &v);
         ex->recorded++;
     }
@@ -2237,10 +2244,19 @@ static void bind_vertex_buffers(VkExec *ex) {
     memcpy(B.vcls, vcls, sizeof vcls), memcpy(B.vpool, vpool, sizeof vpool);
     memcpy(B.vin, ex->vbuf, sizeof B.vin);
     B.vgen = gen;
-    if (B.vb_valid && !memcmp(B.vb, vb, sizeof vb) && !memcmp(B.vo, vo, sizeof vo) && !memcmp(B.vsz, vsz, sizeof vsz) &&
-        (dyn || !memcmp(B.vstr, vstr, sizeof vstr)))
-        return;
-    vkCmdBindVertexBuffers2(ex->cb, 0, 17, vb, vo, vsz, dyn ? NULL : vstr);
+    // Bindings persist on their own: most draws replace one stream. One command, covering only the changed span,
+    // instead of rebinding all 17 (including the constant-zero stream).
+    unsigned first = 0, end = 17;
+    if (B.vb_valid) {
+        first = 17, end = 0;
+        for (unsigned b = 0; b < 17; b++)
+            if (B.vb[b] != vb[b] || B.vo[b] != vo[b] || B.vsz[b] != vsz[b] || (!dyn && B.vstr[b] != vstr[b])) {
+                if (first == 17) first = b;
+                end = b + 1;
+            }
+        if (!end) return;
+    }
+    vkCmdBindVertexBuffers2(ex->cb, first, end - first, vb + first, vo + first, vsz + first, dyn ? NULL : vstr + first);
     ex->recorded++;
     for (int b = 0; b < 17; b++)
         if (vcls[b]) vk_mem_count(vcls[b], VK_MUSE_VB, vsz[b]);
@@ -2698,6 +2714,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
     }
+    if (ex->depth.image && vk_dlss_wanted()) vk_dlss_scene_draw(ex);
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);
@@ -2869,6 +2886,53 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// The game's compute upscaler, matched by the hash of its SPIR-V. The first pair is an older translator, the second
+// the one of 2026-11-09. upscaler = dlss replaces this dispatch; any other hash is left to the game.
+static int upscaler_cs(uint64_t h) {
+    return h == 0x3f3390cfdfa1f9e8ull || h == 0x4f9090b273fa7e4full || h == 0xb14741d70eb26339ull ||
+           h == 0xbd63ebb7ee8d50eaull;
+}
+
+static int dlss_upscale(VkExec *ex, const GfxShader *cs) {
+    if (!vk_dlss_wanted()) return 0;
+    static int matched;
+    if (!upscaler_cs(gfx_shader_spirv_fnv(cs))) {
+        if (matched) return 0;   // the upscaler is known: later compute dispatches stay with the game
+        static uint64_t seen[48];
+        static int nseen;
+        uint64_t h = gfx_shader_spirv_fnv(cs);
+        int i = 0;
+        while (i < nseen && seen[i] != h) i++;
+        if (i == nseen && nseen < 48) {
+            seen[nseen++] = h;
+            uint64_t ds = ex->tex[NVN_STAGE_CS][0], dd = ex->img[NVN_STAGE_CS][1];
+            view_t ws, wd;
+            int hws = 0, hwd = 0;
+            const VkTexImage *a = ds ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(ds), &ws, &hws) : NULL;
+            const VkTexImage *b = dd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(dd), &wd, &hwd) : NULL;
+            rt_log("dlss: compute shader %016llx is not the game's upscaler (tex0 %ux%u fmt %d, img1 %ux%u fmt %d)",
+                   (unsigned long long)h, a ? a->width : 0, a ? a->height : 0, a ? (int)a->format : 0,
+                   b ? b->width : 0, b ? b->height : 0, b ? (int)b->format : 0);
+        }
+        return 0;
+    }
+    uint64_t hs = ex->tex[NVN_STAGE_CS][0], hd = ex->img[NVN_STAGE_CS][1];
+    view_t vs, vd;
+    int hvs = 0, hvd = 0;
+    const VkTexImage *s = hs ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hs), &vs, &hvs) : NULL;
+    const VkTexImage *t = hd ? vk_texture_by_id(&ex->tex_pool, NVN_HANDLE_TEX(hd), &vd, &hvd) : NULL;
+    if (!s || !t || s->samples > 1 || t->samples > 1 || s->type != VK_IMAGE_TYPE_2D || t->type != VK_IMAGE_TYPE_2D ||
+        !(s->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || !(t->usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
+        static int warned;
+        if (!warned++)
+            rt_log("dlss: the upscaler's images do not resolve; the game's upscaler runs for them");
+        return 0;
+    }
+    int r = vk_dlss_record(ex->cb, ex->fence, s, t);
+    if (r > 0) matched = 1;
+    return r;
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     static int skip = -1;   // DKB_SKIP_COMPUTE=1: drop every direct dispatch (bisecting GPU faults)
@@ -2884,6 +2948,17 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
+    int dlss = dlss_upscale(ex, cs);
+    if (dlss > 0) {
+        vk_exec_draw_new_cb();
+        ex->dirty = VK_EXEC_DIRTY_ALL;
+        vk_exec_barrier(ex);
+        ex->recorded++;
+        note_work(ex, 2, (uint64_t)d->x * (uint64_t)d->y * (uint64_t)d->z);
+        if (vk_dump_armed) vk_dump_dispatch(ex, cs, p, info, d);
+        return;
+    }
+    if (dlss < 0) vk_exec_draw_new_cb(), ex->dirty = VK_EXEC_DIRTY_ALL;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = (uint32_t)d->x, c0_dim[1] = (uint32_t)d->y, c0_dim[2] = (uint32_t)d->z;
     c0_lay_set(ex, cs);
